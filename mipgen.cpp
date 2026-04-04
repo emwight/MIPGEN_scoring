@@ -6,6 +6,7 @@ Copyright 2014, all rights reserved
 #include <map>
 #include <string>
 #include <fstream>
+#include <sstream>
 #include <iostream>
 #include <iomanip>
 #include <stdlib.h>
@@ -90,6 +91,7 @@ ofstream GAPS;
 ofstream DOUBLEGAPS;
 ofstream MINUSGAPS;
 ofstream DOUBLEMINUSGAPS;
+ofstream ALLPANELS;
 set<int> arm_length_sum_set;
 vector<char> lig_probe_bases;
 vector<char> ext_probe_bases;
@@ -121,6 +123,10 @@ int starting_mip_overlap;
 int max_capture_size;
 int min_capture_size;
 int capture_increment;
+int mip_scores;
+string initial_panel;
+std::map<std::string, std::vector<int>> initial_mips;
+vector<string> initial_pm;
 
 // instantiates a mipgen object with default values for parameters not explicitly set
 mipgen(int argc, char * argv[]) {
@@ -185,6 +191,7 @@ void set_default_args() {
 	args["-max_arm_copy_product"] = "75";
 	args["-target_arm_copy"] = "20";
     args["-bwa_threads"] = "1";
+	args["-initial_panel"] = "<none>";
 }
 // turns parameters into their proper types for easy access by field
 void parse_arg_values() {
@@ -272,6 +279,12 @@ void parse_arg_values() {
 	min_capture_size = boost::lexical_cast<int>(args["-min_capture_size"]);
 	capture_increment = boost::lexical_cast<int>(args["-capture_increment"]);
 	if (capture_increment == 0) capture_increment = 1; // Prevent any strange behavior associated with 0 value
+	initial_panel = args["-initial_panel"];
+
+	if (initial_panel != "<none>" && args["-score_method"] != "svr") {
+		cerr << "Algorithm only set up for SVR; cannot proceed" << endl;
+		throw 12;
+	}
 
 }
 // prints version and parameters for mipgen run
@@ -346,57 +359,78 @@ void query_sequences(){
 	find_copy();
 	PROGRESS << "bwa copy number analysis finished\n";
 	cerr << "[mipgen] bwa copy number analysis finished\n";
-	ALLMIPS.open((project_name + ".all_mips.txt").c_str());
 
-	if (ALLMIPS.is_open())
-		cerr << "[mipgen] file of all mips ready for write: " << project_name << ".all_mips.txt\n";
-	else
+	// Addition from Ellen: only write these files for regular MIPgen running
+	if (initial_panel == "<none>")
 	{
-		cerr << "[mipgen] all mips file could not be opened" << endl;
-		throw 12;
- 	}
-	ALLMIPS << ">mip_key\t";
-	if(args["-score_method"] == "svr")
-		ALLMIPS << "svr"; 
-	else
-		ALLMIPS << "logistic";
-	ALLMIPS << "_score\tchr\text_probe_start\text_probe_stop\text_probe_copy\text_probe_sequence\tlig_probe_start\tlig_probe_stop\tlig_probe_copy\tlig_probe_sequence\tmip_scan_start_position\tmip_scan_stop_position\tscan_target_sequence\tmip_sequence\tfeature_start_position\tfeature_stop_position\tprobe_strand\tfailure_flags\tmip_name\n";
-	PROGRESS << "file of all mips ready for write: " << project_name << ".all_mips\n";
+		ALLMIPS.open((project_name + ".all_mips.txt").c_str());
 
-	COLLAPSEDMIPS.open((project_name +".collapsed_mips.txt").c_str());
-	if (COLLAPSEDMIPS.is_open())
-		cerr << "[mipgen] file of collapsed mips ready for write: " << project_name << ".collapsed_mips.txt\n";
-	else
-	{
-		cerr << "[mipgen] file of collapsed mips could not be opened" << endl;
-		throw 13;
+		if (ALLMIPS.is_open())
+			cerr << "[mipgen] file of all mips ready for write: " << project_name << ".all_mips.txt\n";
+		else
+		{
+			cerr << "[mipgen] all mips file could not be opened" << endl;
+			throw 12;
+		}
+		ALLMIPS << ">mip_key\t";
+		if (args["-score_method"] == "svr")
+			ALLMIPS << "svr";
+		else
+			ALLMIPS << "logistic";
+		ALLMIPS << "_score\tchr\text_probe_start\text_probe_stop\text_probe_copy\text_probe_sequence\tlig_probe_start\tlig_probe_stop\tlig_probe_copy\tlig_probe_sequence\tmip_scan_start_position\tmip_scan_stop_position\tscan_target_sequence\tmip_sequence\tfeature_start_position\tfeature_stop_position\tprobe_strand\tfailure_flags\tmip_name\n";
+		PROGRESS << "file of all mips ready for write: " << project_name << ".all_mips\n";
+
+		COLLAPSEDMIPS.open((project_name + ".collapsed_mips.txt").c_str());
+		if (COLLAPSEDMIPS.is_open())
+			cerr << "[mipgen] file of collapsed mips ready for write: " << project_name << ".collapsed_mips.txt\n";
+		else
+		{
+			cerr << "[mipgen] file of collapsed mips could not be opened" << endl;
+			throw 13;
+		}
+		COLLAPSEDMIPS << ">mip_key\t";
+		if (args["-score_method"] == "svr")
+			COLLAPSEDMIPS << "svr";
+		else
+			COLLAPSEDMIPS << "logistic";
+		COLLAPSEDMIPS << "_score\tchr\text_probe_start\text_probe_stop\text_probe_copy\text_probe_sequence\tlig_probe_start\tlig_probe_stop\tlig_probe_copy\tlig_probe_sequence\tmip_scan_start_position\tmip_scan_stop_position\tscan_target_sequence\tmip_sequence\tfeature_start_position\tfeature_stop_position\tprobe_strand\tfailure_flags\tmip_name\n";
+		PROGRESS << "file of collapsed mips ready for write: " << project_name << ".collapsed_mips.txt\n";
+
+		PICKEDMIPS.open((project_name + ".initial_picked_mips.txt").c_str());
+		if (!(PICKEDMIPS.is_open()))
+			throw 14;
+		PICKEDMIPS << ">mip_key\t";
+		if (args["-score_method"] == "logistic")
+			PICKEDMIPS << "logistic";
+		else
+			PICKEDMIPS << "svr";
+		PICKEDMIPS << "_score\tchr\text_probe_start\text_probe_stop\text_probe_copy\text_probe_sequence\tlig_probe_start\tlig_probe_stop\tlig_probe_copy\tlig_probe_sequence\tmip_scan_start_position\tmip_scan_stop_position\tscan_target_sequence\tmip_sequence\tfeature_start_position\tfeature_stop_position\tprobe_strand\tfailure_flags\tmip_name\n";
+		SNPMIPS.open((project_name + ".snp_mips.txt").c_str());
+		if (!(SNPMIPS.is_open()))
+			throw 15;
+		SNPMIPS << ">mip_key\t";
+		if (args["-score_method"] == "logistic")
+			SNPMIPS << "logistic";
+		else
+			SNPMIPS << "svr";
+		SNPMIPS << "_score\tchr\text_probe_start\text_probe_stop\text_probe_copy\text_probe_sequence\tlig_probe_start\tlig_probe_stop\tlig_probe_copy\tlig_probe_sequence\tmip_scan_start_position\tmip_scan_stop_position\tscan_target_sequence\tmip_sequence\tfeature_start_position\tfeature_stop_position\tprobe_strand\tfailure_flags\tmip_name\n";
 	}
-	COLLAPSEDMIPS << ">mip_key\t";
-	if(args["-score_method"] == "svr")
-		COLLAPSEDMIPS << "svr";
+	// TO DO what files do we want output?
 	else
-		COLLAPSEDMIPS << "logistic";
-	COLLAPSEDMIPS << "_score\tchr\text_probe_start\text_probe_stop\text_probe_copy\text_probe_sequence\tlig_probe_start\tlig_probe_stop\tlig_probe_copy\tlig_probe_sequence\tmip_scan_start_position\tmip_scan_stop_position\tscan_target_sequence\tmip_sequence\tfeature_start_position\tfeature_stop_position\tprobe_strand\tfailure_flags\tmip_name\n";
-	PROGRESS << "file of collapsed mips ready for write: " << project_name << ".collapsed_mips.txt\n";
+	{
+		ALLPANELS.open((project_name + ".all_panels.txt").c_str());
 
-	PICKEDMIPS.open((project_name + ".picked_mips.txt").c_str());
-	if (!(PICKEDMIPS.is_open()))
-		throw 14;
-	PICKEDMIPS << ">mip_key\t";
-	if(args["-score_method"] == "logistic")
-		PICKEDMIPS << "logistic";
-	else
-		PICKEDMIPS << "svr";
-	PICKEDMIPS << "_score\tchr\text_probe_start\text_probe_stop\text_probe_copy\text_probe_sequence\tlig_probe_start\tlig_probe_stop\tlig_probe_copy\tlig_probe_sequence\tmip_scan_start_position\tmip_scan_stop_position\tscan_target_sequence\tmip_sequence\tfeature_start_position\tfeature_stop_position\tprobe_strand\tfailure_flags\tmip_name\n";
-	SNPMIPS.open((project_name + ".snp_mips.txt").c_str());
-	if (!(SNPMIPS.is_open()))
-		throw 15;
-	SNPMIPS << ">mip_key\t";
-	if(args["-score_method"] == "logistic")
-		SNPMIPS << "logistic";
-	else
-		SNPMIPS << "svr";
-	SNPMIPS << "_score\tchr\text_probe_start\text_probe_stop\text_probe_copy\text_probe_sequence\tlig_probe_start\tlig_probe_stop\tlig_probe_copy\tlig_probe_sequence\tmip_scan_start_position\tmip_scan_stop_position\tscan_target_sequence\tmip_sequence\tfeature_start_position\tfeature_stop_position\tprobe_strand\tfailure_flags\tmip_name\n";
+		if (ALLPANELS.is_open())
+			cerr << "[mipgen] file of all panel summaries ready for write: " << project_name << ".all_panels.txt\n";
+		else
+		{
+			cerr << "[mipgen] all mips file could not be opened" << endl;
+			throw 12;
+		}
+		// TO DO what features do we want to keep track of here?
+		ALLPANELS << ">mip_key\tcoverage_uniformity\n";
+		PROGRESS << "file of all panels ready for write: " << project_name << ".all_panels\n";
+	}
 }
 // prints MIP data to files and selects a final MIP tiling 
 // this is the main process behind MIP design
@@ -554,6 +588,89 @@ void tile_regions()
 	}
 	PROGRESS.close();
 }
+
+// Ellen Wight modified tile regions for iterative algorithm
+// take MIP features as input, output SVR scoring for each MIP
+// 4/3 commit: version of function used for cin (commented out in main)
+vector<int> score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_len, vector<int>lig_len, vector<string> pm)
+{
+	vector<int> mip_scores;
+	mip_scores.reserve(scan_start.size());  // allocates space, size is still 0
+	cerr << "MIPs to score: " << scan_start.size() << endl;
+
+	for (map<int, list<int> >::iterator it = arm_lengths_by_sum.begin(); it != arm_lengths_by_sum.end(); it++)
+		arm_length_sum_set.insert(it->first);
+
+	Featurev5* feature;
+	svm_model* model = svm_load_model((file_dir + "mipgen_svr.model").c_str());
+	vector<double> scoring_parameters;
+
+	for (list<Featurev5>::iterator it = features_to_scan.begin(); it != features_to_scan.end(); it++)
+	{
+		// for each feature, get vector of all positions, add svr_score of current MIP to it, also save individual MIP scores?
+		feature = &*it;
+		string chr = feature->chr;
+		//cout << feature->start_position_flanked << "\t" << feature->stop_position_flanked << endl; //comment
+		feature->current_scan_start_position = feature->start_position_flanked - max_capture_size + *arm_length_sum_set.rbegin(); // build mips starting from when the start of the feature is as far as possible from the extension arm
+		if (feature->current_scan_start_position < 0) feature->current_scan_start_position = 0;
+
+		for (size_t i = 0; i < scan_start.size(); ++i)
+		{
+			if (scan_start[i] >= feature->current_scan_start_position &&
+				scan_start[i] < feature->stop_position_flanked)
+			{
+				if (pm[i] == "+")
+				{
+					boost::shared_ptr<PlusSVMipv4> current_plus_mip(new PlusSVMipv4(
+						feature->chr,
+						scan_start[i],
+						scan_end[i],
+						ext_len[i],
+						lig_len[i]
+					));
+					current_plus_mip->set_scan_target_seq(feature->chromosomal_sequence.substr(current_plus_mip->scan_start_position - feature->chromosomal_sequence_start_position, current_plus_mip->scan_size));
+
+					boost::shared_ptr<SVMipv4> designed_plus_mip;
+					designed_plus_mip = design_mip(feature, current_plus_mip);
+					if (args["-score_method"] == "logistic" || args["-score_method"] == "mixed")
+						designed_plus_mip->score = designed_plus_mip->get_score();
+					else if (args["-score_method"] == "svr")
+					{
+						designed_plus_mip->get_parameters(scoring_parameters, feature->long_range_content);
+						designed_plus_mip->score = predict_value(scoring_parameters, model);
+					}
+					mip_scores.push_back(designed_plus_mip->score);
+					cout << "Individual score for MIP #" << i << ": " << designed_plus_mip->score << endl;
+				}
+				else if (pm[i] == "-")
+				{
+					boost::shared_ptr<MinusSVMipv4> current_minus_mip(new MinusSVMipv4(
+						feature->chr,
+						scan_start[i],
+						scan_end[i],
+						ext_len[i],
+						lig_len[i]
+					));
+					current_minus_mip->set_scan_target_seq(feature->chromosomal_sequence.substr(current_minus_mip->scan_start_position - feature->chromosomal_sequence_start_position, current_minus_mip->scan_size));
+
+					boost::shared_ptr<SVMipv4> designed_minus_mip;
+					designed_minus_mip = design_mip(feature, current_minus_mip);
+					if (args["-score_method"] == "logistic" || args["-score_method"] == "mixed")
+						designed_minus_mip->score = designed_minus_mip->get_score();
+					else if (args["-score_method"] == "svr")
+					{
+						designed_minus_mip->get_parameters(scoring_parameters, feature->long_range_content);
+						designed_minus_mip->score = predict_value(scoring_parameters, model);
+					}
+					mip_scores.push_back(designed_minus_mip->score);
+					cout << designed_minus_mip->score << endl;
+				}
+			}	
+		}
+	}
+	return mip_scores;
+}
+
 // uses BWA to find probe and target copy numbers
 void find_copy ()
 {
@@ -1041,6 +1158,58 @@ string get_features_to_scan()
 	*/
 	return "successfully loaded features for mip design; retrieving chromosomal sequence\n";
 }
+
+void get_initial_panel()
+{
+	ifstream file(initial_panel);
+	if (!file.is_open()) {
+		std::cerr << "Error: could not open file for initial MIP panel";
+		throw 99;
+	}
+
+	vector<string> header;
+	string line;
+
+	// Initialize headers
+	if (std::getline(file, line)) {
+		boost::trim(line);
+		boost::erase_all(line, "\"");
+		stringstream ss(line);
+		string cell;
+		while (getline(ss, cell, ',')) {
+			cerr << "Read in header: [" << cell << "]" << endl;
+			header.push_back(cell);
+			if(cell != "probe_strand") 
+				initial_mips[cell] = {};
+		}
+	}
+
+	cerr << "Header size: " << header.size() << endl;
+	cerr << "File good after header: " << file.good() << endl;
+	cerr << "File eof after header: " << file.eof() << endl;
+
+	while (std::getline(file, line)) {
+		boost::trim(line);
+		boost::erase_all(line, "\"");
+		stringstream ss(line);
+		string cell;
+		size_t i = 0;
+
+		while (std::getline(ss, cell, ',')) {			
+			if (i < header.size()) {
+				cerr << "Value [" << cell << "] to header: [" << header[i] << "]" << endl;
+				if (header[i] != "probe_strand")
+					initial_mips[header[i]].push_back(std::stoi(cell));
+				else if (header[i] == "probe_strand")
+					initial_pm.push_back(cell);
+			}
+			i++;
+		}
+	}
+	file.close();
+	cout << "finished reading in initial MIP panel" << endl;
+}
+
 // uses Tandem Repeats Finder to mask tandem repeats
 bool get_masked_features_to_scan()
 {
@@ -1284,7 +1453,8 @@ string parse_command_line(int argc, char * argv[])
 		-max_capture_size -capture_increment -max_mip_overlap -starting_mip_overlap -stop_optimizing_scores_above -silent_mode \
 		-masked_arm_threshold -seal_both_strands -half_seal_both_strands -tag_sizes -ext_min_length -lig_min_length -bwa_threads \
 		-snp_file -double_tile_strand_unaware -double_tile_strands_separately -score_method -logistic_heuristic -file_of_parameters \
-		-logistic_priority_score -svr_priority_score -logistic_optimal_score -svr_optimal_score -max_arm_copy_product -target_arm_copy";
+		-logistic_priority_score -svr_priority_score -logistic_optimal_score -svr_optimal_score -max_arm_copy_product -target_arm_copy \
+		-initial_panel";
 	vector<string> option_vector;
 	boost::split(option_vector, all_options, boost::is_any_of(" \t"), boost::token_compress_on);
 	string splash = "\n\
@@ -1411,7 +1581,11 @@ Miscellaneous:\n\
 -download_tabix_index           providing \"on\" will force redownload of common snp tbi file\n\
                                 DEPRECATED\n\
 -bwa_threads                    make use of BWA's multithreading option (-t _)\n\
-                                default is 1\n";
+                                default is 1\n\
+Additions from Ellen:\n\
+\n\
+-initial_panel					path to csv file of an initial MIP panel for the selection algorithm; \n\
+								if not provided, will default to running MIPgen as published by Boyle\n";
 
 	if(argc == 1) return splash;
 	else if(string(argv[1])=="-doc") return doc;
@@ -1607,10 +1781,10 @@ void pick_mips (Featurev5 * feature, vector<double> & scoring_parameters, svm_mo
 			} while (!(positions_to_scan_minus_again.empty()) && (picked_mip != 0 || extended_region));
 		}
 	}
-	print_gaps(GAPS, ".coverage_failed.bed", "BASES NOT COVERED ON CHROMOSOME ", feature, positions_to_scan);
-	print_gaps(DOUBLEGAPS, ".double_tile_failed.bed", "BASES NOT DOUBLE TILED ON CHROMOSOME ", feature, positions_to_scan_again);
-	print_gaps(MINUSGAPS, ".minus_strand_failed.bed", "BASES NOT COVERED ON MINUS STRAND OF CHROMOSOME ", feature, positions_to_scan_minus);
-	print_gaps(DOUBLEMINUSGAPS, ".minus_strand_double_tile_failed.bed", "BASES NOT DOUBLE TILED ON MINUS STRAND OF CHROMOSOME ", feature, positions_to_scan_minus_again);
+	print_gaps(GAPS, ".initial_coverage_failed.bed", "BASES NOT COVERED ON CHROMOSOME ", feature, positions_to_scan);
+	print_gaps(DOUBLEGAPS, ".initial_double_tile_failed.bed", "BASES NOT DOUBLE TILED ON CHROMOSOME ", feature, positions_to_scan_again);
+	print_gaps(MINUSGAPS, ".initial_minus_strand_failed.bed", "BASES NOT COVERED ON MINUS STRAND OF CHROMOSOME ", feature, positions_to_scan_minus);
+	print_gaps(DOUBLEMINUSGAPS, ".initial_minus_strand_double_tile_failed.bed", "BASES NOT DOUBLE TILED ON MINUS STRAND OF CHROMOSOME ", feature, positions_to_scan_minus_again);
 }
 
 // records each position's highest scoring mip possible 
@@ -2025,7 +2199,90 @@ int main(int argc, char * argv[]) {
 		mipgen * mg = new mipgen(argc, argv);
 		mg->print_header();
 		mg->query_sequences();
-		mg->tile_regions();
+		if(mg->initial_panel == "<none>") 
+		{
+			mg->tile_regions();
+		}
+		else
+		{
+			mg->get_initial_panel();
+			for (const auto& col : mg->initial_mips) {
+				cerr << "Key: [" << col.first << "], nchar " << col.first.size() << ", size: " << col.second.size() << endl;
+			}
+			cerr << mg->initial_pm.size() << endl;
+
+			// not all of these matched - need to keep better track of mip order for troubleshooting
+			vector<int> mip_scores = mg->score_mips(
+				mg->initial_mips.at("mip_start"),
+				mg->initial_mips.at("mip_end"),
+				mg->initial_mips.at("ext_len"),
+				mg->initial_mips.at("lig_len"),
+				mg->initial_pm
+				);
+
+			// start with memoryless process
+			// keep track of uniform coverage metric for each mip panel, but not all individual mips
+			// move around a little - one probe or pair of probes at a time
+
+			// for initial forked commit: archive cin version of score_mips
+			// before added functionality of reading in csv file (above)
+			/*
+			std::cout << "Vector of start positions: " << endl;
+			std::vector<int> start_in;
+			int val_start;
+			// Read values until the input stream fails
+			while (cin >> val_start) {
+				if (val_start == -99) {
+					break; // Exit the loop if the condition is met
+				}
+				start_in.push_back(val_start);
+			}
+			std::cout << "Vector of end positions: " << endl;
+			std::vector<int> end_in;
+			int val_end;
+			// Read values until the input stream fails
+			while (cin >> val_end) {
+				if (val_end == -99) {
+					break; // Exit the loop if the condition is met
+				}
+				end_in.push_back(val_end);
+			}
+			std::cout << "Vector of ext arm lengths: " << endl;
+			std::vector<int> ext_in;
+			int val_ext;
+			// Read values until the input stream fails
+			while (cin >> val_ext) {
+				if (val_ext == -99) {
+					break; // Exit the loop if the condition is met
+				}
+				ext_in.push_back(val_ext);
+			}
+			std::cout << "Vector of lig arm lengths: " << endl;
+			std::vector<int> lig_in;
+			int val_lig;
+			// Read values until the input stream fails
+			while (cin >> val_lig) {
+				if (val_lig == -99) {
+					break; // Exit the loop if the condition is met
+				}
+				lig_in.push_back(val_lig);
+			}
+			// from when we had pm as +/- instead of 1/-1
+			std::cout << "Vector of pm indicators: " << endl;
+			std::vector<string> pm_in;
+			string val_chr;
+			// Read values until the input stream fails
+			while (cin >> val_chr) {
+				if (val_chr == "end") {
+					break; // Exit the loop if the condition is met
+				}
+				pm_in.push_back(val_chr);
+			}
+			mg->score_mips(start_in, end_in, ext_in, lig_in, pm_in);
+			*/
+		}
+
+		
 	} catch (int e) {
 		if(e == 1) { }
 		else { cerr << "unable to tile sequences due to circumstance " << e << endl; }
@@ -2033,5 +2290,4 @@ int main(int argc, char * argv[]) {
 	} catch (exception & e) {
 		cerr << "unable to tile sequences" << endl << e.what() << endl;
 	}
-	
 }
