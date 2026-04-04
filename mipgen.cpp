@@ -92,6 +92,7 @@ ofstream DOUBLEGAPS;
 ofstream MINUSGAPS;
 ofstream DOUBLEMINUSGAPS;
 ofstream ALLPANELS;
+ofstream FINALPANEL;
 set<int> arm_length_sum_set;
 vector<char> lig_probe_bases;
 vector<char> ext_probe_bases;
@@ -418,18 +419,33 @@ void query_sequences(){
 	// TO DO what files do we want output?
 	else
 	{
+		// all panels considered - see progression of uniform coverage
 		ALLPANELS.open((project_name + ".all_panels.txt").c_str());
 
 		if (ALLPANELS.is_open())
 			cerr << "[mipgen] file of all panel summaries ready for write: " << project_name << ".all_panels.txt\n";
 		else
 		{
-			cerr << "[mipgen] all mips file could not be opened" << endl;
+			cerr << "[mipgen] all panels file could not be opened" << endl;
 			throw 12;
 		}
-		// TO DO what features do we want to keep track of here?
-		ALLPANELS << ">mip_key\tcoverage_uniformity\n";
-		PROGRESS << "file of all panels ready for write: " << project_name << ".all_panels\n";
+		// TO DO what features do we want to keep track of here other than coverage uniformity?
+		ALLPANELS << ">panel_key\tcoverage_uniformity\n";
+		PROGRESS << "file of all panels ready for write: " << project_name << ".all_panels.txt\n";
+
+		// final panel output (coverage uniformity will be in ALLPANELS file; this will have individual MIPs)
+		FINALPANEL.open((project_name + ".final_panel.txt").c_str());
+
+		if (FINALPANEL.is_open())
+			cerr << "[mipgen] file of final MIP panel ready for write: " << project_name << ".final_panel.txt\n";
+		else
+		{
+			cerr << "[mipgen] final MIP panel file could not be opened" << endl;
+			throw 12;
+		}
+		// TO DO ideally we'll want everything here that's in the original MIPgen output? would need to figure out how to get it all for the final panel
+		FINALPANEL << ">mip_key\tcoverage_uniformity\n";
+		PROGRESS << "file of final MIP panel ready for write: " << project_name << ".final_panel.txt\n";
 	}
 }
 // prints MIP data to files and selects a final MIP tiling 
@@ -591,12 +607,22 @@ void tile_regions()
 
 // Ellen Wight modified tile regions for iterative algorithm
 // take MIP features as input, output SVR scoring for each MIP
-// 4/3 commit: version of function used for cin (commented out in main)
+// note from last commit: we did not have mismatches, just Ellen user error :)
+
+// TO DO add uniform coverage calculation:
+	// 1. modify s.t. each feature position within a MIP scan gets that MIP's SVR score added to it
+		// a) back-transform SVR score with 10^[svr_score]? Or just leave as "relative number of reads"? - start as SVR score for code simplicity
+		// b) maybe reverse order of for loop? (MIP as outer, features as inner) - whiteboard this out
+		// c) need to run checks on multiple features mapping to a single MIP? (mainly for perturbations)
+			// other considerations? (go through MIP design standards)
+	// 2. once we've looped through all MIPs/features, calculate uniform coverage of the panel (figure out metric - some sort of KS test statistic or other)
+	// 3. change this to a void function? I don't think we need it to return mip_scores to main (or uniform_coverage for that matter)
+		// if so, move vector<int> mip_scores to ~line 131
+// TO DO write uniform coverage to ALLPANELS file every time this function is called
 vector<int> score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_len, vector<int>lig_len, vector<string> pm)
 {
 	vector<int> mip_scores;
 	mip_scores.reserve(scan_start.size());  // allocates space, size is still 0
-	cerr << "MIPs to score: " << scan_start.size() << endl;
 
 	for (map<int, list<int> >::iterator it = arm_lengths_by_sum.begin(); it != arm_lengths_by_sum.end(); it++)
 		arm_length_sum_set.insert(it->first);
@@ -640,7 +666,7 @@ vector<int> score_mips(vector<int> scan_start, vector<int> scan_end, vector<int>
 						designed_plus_mip->score = predict_value(scoring_parameters, model);
 					}
 					mip_scores.push_back(designed_plus_mip->score);
-					cout << "Individual score for MIP #" << i << ": " << designed_plus_mip->score << endl;
+					cout << "Individual score for MIP+ with scan start position " << scan_start[i] << ": " << designed_plus_mip->score << endl;
 				}
 				else if (pm[i] == "-")
 				{
@@ -663,7 +689,7 @@ vector<int> score_mips(vector<int> scan_start, vector<int> scan_end, vector<int>
 						designed_minus_mip->score = predict_value(scoring_parameters, model);
 					}
 					mip_scores.push_back(designed_minus_mip->score);
-					cout << designed_minus_mip->score << endl;
+					cout << "Individual score for MIP- with scan start position " << scan_start[i] << ": " << designed_minus_mip->score << endl;
 				}
 			}	
 		}
@@ -1159,6 +1185,8 @@ string get_features_to_scan()
 	return "successfully loaded features for mip design; retrieving chromosomal sequence\n";
 }
 
+// Ellen Wight addition - read in CSV of MIPs (specific format)
+// goal: make this more flexible (maybe be able to read in the final picked_mips file from standard MIPgen instead of a cleaned version)
 void get_initial_panel()
 {
 	ifstream file(initial_panel);
@@ -1177,16 +1205,11 @@ void get_initial_panel()
 		stringstream ss(line);
 		string cell;
 		while (getline(ss, cell, ',')) {
-			cerr << "Read in header: [" << cell << "]" << endl;
 			header.push_back(cell);
 			if(cell != "probe_strand") 
 				initial_mips[cell] = {};
 		}
 	}
-
-	cerr << "Header size: " << header.size() << endl;
-	cerr << "File good after header: " << file.good() << endl;
-	cerr << "File eof after header: " << file.eof() << endl;
 
 	while (std::getline(file, line)) {
 		boost::trim(line);
@@ -1197,7 +1220,6 @@ void get_initial_panel()
 
 		while (std::getline(ss, cell, ',')) {			
 			if (i < header.size()) {
-				cerr << "Value [" << cell << "] to header: [" << header[i] << "]" << endl;
 				if (header[i] != "probe_strand")
 					initial_mips[header[i]].push_back(std::stoi(cell));
 				else if (header[i] == "probe_strand")
@@ -2199,6 +2221,11 @@ int main(int argc, char * argv[]) {
 		mipgen * mg = new mipgen(argc, argv);
 		mg->print_header();
 		mg->query_sequences();
+
+		// Ellen Wight modifications to main: algorithmic approach
+
+		// if initial panel not given, simply run regular MIPgen
+		// goal: if initial panel not given, run regular MIPgen, then use its final output as the initial panel for our algorithm
 		if(mg->initial_panel == "<none>") 
 		{
 			mg->tile_regions();
@@ -2206,12 +2233,11 @@ int main(int argc, char * argv[]) {
 		else
 		{
 			mg->get_initial_panel();
-			for (const auto& col : mg->initial_mips) {
-				cerr << "Key: [" << col.first << "], nchar " << col.first.size() << ", size: " << col.second.size() << endl;
-			}
-			cerr << mg->initial_pm.size() << endl;
+			if (mg->initial_pm.size() != mg->initial_mips.at("mip_start").size())
+				throw 100;
 
-			// not all of these matched - need to keep better track of mip order for troubleshooting
+			cerr << "Number of MIPs in initial panel: " << mg->initial_pm.size() << endl;
+
 			vector<int> mip_scores = mg->score_mips(
 				mg->initial_mips.at("mip_start"),
 				mg->initial_mips.at("mip_end"),
@@ -2220,66 +2246,23 @@ int main(int argc, char * argv[]) {
 				mg->initial_pm
 				);
 
-			// start with memoryless process
-			// keep track of uniform coverage metric for each mip panel, but not all individual mips
-			// move around a little - one probe or pair of probes at a time
+			// TO DO uniform coverage calculation + write to file for each iteration
+				// add code to score_mips, having this as a separate function would just cause redundant iterating through features
+				// specific tasks for this commented above score_mips() function definition
 
-			// for initial forked commit: archive cin version of score_mips
-			// before added functionality of reading in csv file (above)
-			/*
-			std::cout << "Vector of start positions: " << endl;
-			std::vector<int> start_in;
-			int val_start;
-			// Read values until the input stream fails
-			while (cin >> val_start) {
-				if (val_start == -99) {
-					break; // Exit the loop if the condition is met
-				}
-				start_in.push_back(val_start);
-			}
-			std::cout << "Vector of end positions: " << endl;
-			std::vector<int> end_in;
-			int val_end;
-			// Read values until the input stream fails
-			while (cin >> val_end) {
-				if (val_end == -99) {
-					break; // Exit the loop if the condition is met
-				}
-				end_in.push_back(val_end);
-			}
-			std::cout << "Vector of ext arm lengths: " << endl;
-			std::vector<int> ext_in;
-			int val_ext;
-			// Read values until the input stream fails
-			while (cin >> val_ext) {
-				if (val_ext == -99) {
-					break; // Exit the loop if the condition is met
-				}
-				ext_in.push_back(val_ext);
-			}
-			std::cout << "Vector of lig arm lengths: " << endl;
-			std::vector<int> lig_in;
-			int val_lig;
-			// Read values until the input stream fails
-			while (cin >> val_lig) {
-				if (val_lig == -99) {
-					break; // Exit the loop if the condition is met
-				}
-				lig_in.push_back(val_lig);
-			}
-			// from when we had pm as +/- instead of 1/-1
-			std::cout << "Vector of pm indicators: " << endl;
-			std::vector<string> pm_in;
-			string val_chr;
-			// Read values until the input stream fails
-			while (cin >> val_chr) {
-				if (val_chr == "end") {
-					break; // Exit the loop if the condition is met
-				}
-				pm_in.push_back(val_chr);
-			}
-			mg->score_mips(start_in, end_in, ext_in, lig_in, pm_in);
-			*/
+			// TO DO ~~algorithm~~
+				// 1. changing mip_start/mip_end, 1-2 probes at a time
+				// 2. changing ext_len/lig_len, 1-2 probes at a time
+				// for now, don't change +/- strand or number of MIPs
+				// use Claude to explore algorithm options/help write code to implement
+
+			// TO DO write final MIP panel to file (individual MIPs)
+
+			// Algorithm notes:
+				// start with memoryless process - how to make sure we get the best panel at the end if we don't save info?
+					// maybe just brush up on your algorithms Ellen...
+					// maybe save mip panel w/ its uniform coverage for each iteration, json structure-ish style
+				// each iteration, just move around a little - one probe or pair of probes at a time
 		}
 
 		
