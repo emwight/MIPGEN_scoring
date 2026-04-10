@@ -614,6 +614,10 @@ void tile_regions()
 
 // TO DO write stdev and % coverage to ALLPANELS file every time this function is called
 // TO DO find way to combine stdev and % coverage for metric (or have threshold for % coverage)
+
+// TO DO update README
+// TO D0 include zip file of R script/sample problem that we're using to test, including the csv file of the initial MIP panel
+// TO DO with README, include example commands needed for modified MIPgen
 void score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_len, vector<int>lig_len, vector<string> pm)
 {
 	vector<int> mip_scores;
@@ -678,7 +682,7 @@ void score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_le
 					{
 						// for uniform coverage calculation, using 10^[svr_score] since svr_score can take negative values? TO DO discuss
 						if (read_depth.find(k) != read_depth.end())
-							read_depth[k] += pow(10, designed_plus_mip->score);
+							read_depth[k] += (pow(10, designed_plus_mip->score) - 0.05);
 					}
 				}
 				else if (pm[i] == "-")
@@ -705,7 +709,7 @@ void score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_le
 					for (size_t k = scan_start[i]; k < scan_end[i] + 1; ++k)
 					{
 						if (read_depth.find(k) != read_depth.end())
-							read_depth[k] += pow(10,designed_minus_mip->score);
+							read_depth[k] += (pow(10,designed_minus_mip->score) - 0.05);
 					}
 				}
 			}
