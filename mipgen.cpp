@@ -124,7 +124,8 @@ int starting_mip_overlap;
 int max_capture_size;
 int min_capture_size;
 int capture_increment;
-int mip_scores;
+vector<int> mip_scores;
+unordered_map<int, int> read_depth;
 string initial_panel;
 std::map<std::string, std::vector<int>> initial_mips;
 vector<string> initial_pm;
@@ -430,7 +431,7 @@ void query_sequences(){
 			throw 12;
 		}
 		// TO DO what features do we want to keep track of here other than coverage uniformity?
-		ALLPANELS << ">panel_key\tcoverage_uniformity\n";
+		ALLPANELS << ">panel_key\tpct_coverage\tdepth_stdev\n";
 		PROGRESS << "file of all panels ready for write: " << project_name << ".all_panels.txt\n";
 
 		// final panel output (coverage uniformity will be in ALLPANELS file; this will have individual MIPs)
@@ -606,22 +607,18 @@ void tile_regions()
 }
 
 // Ellen Wight modified tile regions for iterative algorithm
-// take MIP features as input, output SVR scoring for each MIP
-// note from last commit: we did not have mismatches, just Ellen user error :)
+// take MIP features as input
+// 1. Get SVR scoring for each MIP
+// 2. Aggregate [back-transformed?] SVR scoring for each bp along all features
+// 3. Calculate % coverage of features and sd of read depth
 
-// TO DO add uniform coverage calculation:
-	// 1. modify s.t. each feature position within a MIP scan gets that MIP's SVR score added to it
-		// a) back-transform SVR score with 10^[svr_score]? Or just leave as "relative number of reads"? - start as SVR score for code simplicity
-		// b) maybe reverse order of for loop? (MIP as outer, features as inner) - whiteboard this out
-		// c) need to run checks on multiple features mapping to a single MIP? (mainly for perturbations)
-			// other considerations? (go through MIP design standards)
-	// 2. once we've looped through all MIPs/features, calculate uniform coverage of the panel (figure out metric - some sort of KS test statistic or other)
-	// 3. change this to a void function? I don't think we need it to return mip_scores to main (or uniform_coverage for that matter)
-		// if so, move vector<int> mip_scores to ~line 131
-// TO DO write uniform coverage to ALLPANELS file every time this function is called
-vector<int> score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_len, vector<int>lig_len, vector<string> pm)
+// TO DO write stdev and % coverage to ALLPANELS file every time this function is called
+// TO DO find way to combine stdev and % coverage for metric (or have threshold for % coverage)
+void score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_len, vector<int>lig_len, vector<string> pm)
 {
 	vector<int> mip_scores;
+	unordered_map<int, int> read_depth;
+	cout << "read depth size: " << read_depth.size() << endl;
 	mip_scores.reserve(scan_start.size());  // allocates space, size is still 0
 
 	for (map<int, list<int> >::iterator it = arm_lengths_by_sum.begin(); it != arm_lengths_by_sum.end(); it++)
@@ -631,20 +628,31 @@ vector<int> score_mips(vector<int> scan_start, vector<int> scan_end, vector<int>
 	svm_model* model = svm_load_model((file_dir + "mipgen_svr.model").c_str());
 	vector<double> scoring_parameters;
 
+	// loop through each feature
 	for (list<Featurev5>::iterator it = features_to_scan.begin(); it != features_to_scan.end(); it++)
 	{
 		// for each feature, get vector of all positions, add svr_score of current MIP to it, also save individual MIP scores?
 		feature = &*it;
 		string chr = feature->chr;
-		//cout << feature->start_position_flanked << "\t" << feature->stop_position_flanked << endl; //comment
-		feature->current_scan_start_position = feature->start_position_flanked - max_capture_size + *arm_length_sum_set.rbegin(); // build mips starting from when the start of the feature is as far as possible from the extension arm
-		if (feature->current_scan_start_position < 0) feature->current_scan_start_position = 0;
+
+		// instantiate bp map by feature
+		// TO DO - what do we want the limits of this to be?
+		for (size_t k = feature->start_position_flanked; k <= feature->stop_position_flanked; ++k)
+		{
+			// each feature should be mutually exclusive, but checking just in case
+			if (read_depth.find(k) == read_depth.end())
+			{
+				read_depth[k] = 0;
+			}
+		}
 
 		for (size_t i = 0; i < scan_start.size(); ++i)
 		{
-			if (scan_start[i] >= feature->current_scan_start_position &&
+			// only score MIP if it's overlapping the feature
+			if (scan_end[i] >= feature->start_position_flanked &&
 				scan_start[i] < feature->stop_position_flanked)
 			{
+				// for each MIP, score similar to tile_regions() and add score to read_depth map
 				if (pm[i] == "+")
 				{
 					boost::shared_ptr<PlusSVMipv4> current_plus_mip(new PlusSVMipv4(
@@ -666,7 +674,12 @@ vector<int> score_mips(vector<int> scan_start, vector<int> scan_end, vector<int>
 						designed_plus_mip->score = predict_value(scoring_parameters, model);
 					}
 					mip_scores.push_back(designed_plus_mip->score);
-					cout << "Individual score for MIP+ with scan start position " << scan_start[i] << ": " << designed_plus_mip->score << endl;
+					for (size_t k = scan_start[i]; k < scan_end[i] + 1; ++k)
+					{
+						// for uniform coverage calculation, using 10^[svr_score] since svr_score can take negative values? TO DO discuss
+						if (read_depth.find(k) != read_depth.end())
+							read_depth[k] += pow(10, designed_plus_mip->score);
+					}
 				}
 				else if (pm[i] == "-")
 				{
@@ -689,12 +702,53 @@ vector<int> score_mips(vector<int> scan_start, vector<int> scan_end, vector<int>
 						designed_minus_mip->score = predict_value(scoring_parameters, model);
 					}
 					mip_scores.push_back(designed_minus_mip->score);
-					cout << "Individual score for MIP- with scan start position " << scan_start[i] << ": " << designed_minus_mip->score << endl;
+					for (size_t k = scan_start[i]; k < scan_end[i] + 1; ++k)
+					{
+						if (read_depth.find(k) != read_depth.end())
+							read_depth[k] += pow(10,designed_minus_mip->score);
+					}
 				}
-			}	
+			}
 		}
 	}
-	return mip_scores;
+	// panel metrics
+	cout << "Number of MIPs scored: " << mip_scores.size() << endl;
+
+	// measure 1: % of features covered
+	int n_covered = 0;
+	int n_total = 0;
+	for (const auto& [key, value] : read_depth) {
+		n_total += 1;
+		if (value > 0) {
+			n_covered += 1;
+		}
+		else {
+			cout << key << " not covered" << endl;
+		}
+	}
+	double pct_coverage;
+	pct_coverage = n_covered / n_total;
+
+	cout << pct_coverage*100 << "% of feature bps covered" << endl;
+
+	// measure 2: of covered bp, stdev of read depth
+	double sum_rd = 0;
+	for (const auto& [key, value] : read_depth) {
+		sum_rd += value;
+	}
+
+	double mean_rd = sum_rd / n_covered;
+	cout << "Mean of read depths > 0 (transformed): " << mean_rd << endl;
+
+	double var_rd = 0;
+	for (const auto& [key, value] : read_depth)
+	{
+		if (value > 0)
+			var_rd += (value - mean_rd) * (value - mean_rd);
+	}
+	var_rd /= n_covered;
+	double sd_rd = sqrt(var_rd);
+	cout << "Standard deviation of read depths > 0 (transformed): " << sd_rd << endl;
 }
 
 // uses BWA to find probe and target copy numbers
@@ -2238,7 +2292,7 @@ int main(int argc, char * argv[]) {
 
 			cerr << "Number of MIPs in initial panel: " << mg->initial_pm.size() << endl;
 
-			vector<int> mip_scores = mg->score_mips(
+			mg->score_mips(
 				mg->initial_mips.at("mip_start"),
 				mg->initial_mips.at("mip_end"),
 				mg->initial_mips.at("ext_len"),
@@ -2247,7 +2301,6 @@ int main(int argc, char * argv[]) {
 				);
 
 			// TO DO uniform coverage calculation + write to file for each iteration
-				// add code to score_mips, having this as a separate function would just cause redundant iterating through features
 				// specific tasks for this commented above score_mips() function definition
 
 			// TO DO ~~algorithm~~
@@ -2264,7 +2317,6 @@ int main(int argc, char * argv[]) {
 					// maybe save mip panel w/ its uniform coverage for each iteration, json structure-ish style
 				// each iteration, just move around a little - one probe or pair of probes at a time
 		}
-
 		
 	} catch (int e) {
 		if(e == 1) { }
