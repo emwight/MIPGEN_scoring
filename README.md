@@ -1,3 +1,32 @@
+MIPGEN_scoring
+==============================
+
+**Only compatible with -score_method "svr"**
+
+Algorithmic approach to optimize uniform coverage using MIPgen scoring. In this section, any references to "MIPgen" refer to the original code/documentation; references to "MIPgen_scoring" refer to modifications
+
+(once criterion/algorithm are finalized, discuss here)
+
+First, read through MIPgen documentation and build it according to their documentation (install dependencies, etc.). Use their example to ensure MIPgen runs; the example for MIPgen_scoring builds off of this example
+
+----
+Differences from MIPGEN
+----
+
+Additional argument:
+    
+    -initial_panel: filepath to a .csv file that specifies the initial panel for the algorithm to start with. 
+                    If no filepath is supplied, original MIPgen code is run instead of MIPgen_scoring.
+
+The file for the initial panel should have one row per MIP with the following columns, in the specified order:
+- **mip_start**: integer for the start position of the MIP scan sequence (between the extension and ligation arms) within the indexed genome.
+- **mip_end**: integer for the end position of the MIP scan sequence (between the extension and ligation arms) within the indexed genome.
+- **ext_len**: integer for the length of the extension arm of the MIP
+- **lig_len**: integer for the length of the ligation arm of the MIP
+- **probe_strand**: takes values + or -
+
+See the mipgen_scoring_example for a sample .csv file that goes with Ellen's run of the MIPGEN example in their original documentation, as well as code to take an output .txt file of picked MIPs from MIPgen and convert to the required .csv format.
+
 MIPGEN
 ======
 
