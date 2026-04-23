@@ -3,29 +3,13 @@ MIPGEN_scoring
 
 **Only compatible with -score_method "svr"**
 
-Algorithmic approach to optimize uniform coverage using MIPgen scoring. In this section, any references to "MIPgen" refer to the original code/documentation; references to "MIPgen_scoring" refer to modifications
+An iterative algorithmic approach to optimize uniform coverage using MIPgen scoring. In this section, any references to "MIPgen" refer to the original code/documentation; references to "MIPgen_scoring" refer to modifications
 
-(once criterion/algorithm are finalized, discuss here)
+The algorithm minimizes loss of uniform coverage, as determined by the probability of 0 reads in each base pair along the target. We consider each MIP as a Poisson process, the rate of which is determined by the given MIP's relative expected number of reads (as determined by MIPgen's SVR model) to all MIPs in the panel. We then consider each base pair along the target as conditional sampling from the Poisson process (i.e. transformed into a Multinomial distribution). The probability of each base pair having 0 reads is then calculated from a binomial pdf with parameters (p = the sum of rates for MIPs covering the given base pair; N = the user-provided number of expected reads we want to achieve uniformly with the panel). Finally via conditional independence, we assume little to no dependence between these probabilities, and so we sum them up across all base pairs in the target to get an overall loss of uniform coverage for the given panel.
 
-First, read through MIPgen documentation and build it according to their documentation (install dependencies, etc.). Use their example to ensure MIPgen runs; the example for MIPgen_scoring builds off of this example
+(once algorithm is finalized, discuss here)
 
-----
-Differences from MIPGEN
-----
-
-Additional argument:
-    
-    -initial_panel: filepath to a .csv file that specifies the initial panel for the algorithm to start with. 
-                    If no filepath is supplied, original MIPgen code is run instead of MIPgen_scoring.
-
-The file for the initial panel should have one row per MIP with the following columns, in the specified order:
-- **mip_start**: integer for the start position of the MIP scan sequence (between the extension and ligation arms) within the indexed genome.
-- **mip_end**: integer for the end position of the MIP scan sequence (between the extension and ligation arms) within the indexed genome.
-- **ext_len**: integer for the length of the extension arm of the MIP
-- **lig_len**: integer for the length of the ligation arm of the MIP
-- **probe_strand**: takes values + or -
-
-See the mipgen_scoring_example for a sample .csv file that goes with Ellen's run of the MIPGEN example in their original documentation, as well as code to take an output .txt file of picked MIPs from MIPgen and convert to the required .csv format.
+The below documentation from MIPgen is edited in **bold** with differences/additions from MIPgen_scoring.
 
 MIPGEN
 ======
@@ -35,6 +19,14 @@ One stop MIP design and analysis
 Use MIPgen to design custom mip panels for target enrichment of moderate to high complexity DNA targets ranging from 120 to 250bp in size
 
 To compile MIPgen, you will need a C++ compiler, such as GCC (http://gcc.gnu.org/). That's it! For running design and analysis, see below for dependencies
+
+**MIPgen dependencies: BWA, tabix, samtools**
+
+**MIPgen_scoring additional dependency: GNU Scientific Library (GSL)**
+
+**(For those newer to C++ like me, I installed it this way in Ubuntu:)**
+
+    sudo apt-get install libgsl-dev
 
 -----
 BUILD MIPGEN
@@ -52,9 +44,15 @@ MIPgen accepts many options intended to maximize the flexibility of your designs
 
 The only required parameters are the minimum and maximum sizes for the captured sequence, a prefix for output files and a BED file consisting of the coordinates of the desired targets, and the bwa- and samtools-indexed reference genome from which to pull the sequences
 
+**NOTE: index your genome before running MIPgen or MIPgen_scoring**
+
+    bwa index [reference_genome].fasta
+
 Other options provide control over tiling, scoring and oligo design behavior
 
 MIPgen offers three scoring methods based on two methods of scoring: SVR and logistic regression. Both methods offer similar performance, with slight improvements seen with the SVR scoring. The 'mixed' scoring option will perform designs primarily with the faster logistic regression score and finish with the more accurate SVR scoring scheme.
+
+**Again note that MIPgen_scoring is only compatible with -score_method "svr"**
 
 Run ./mipgen -doc to see the full documentation or read the text below
 
@@ -100,6 +98,10 @@ A copy of the human reference genome (GRCh37, also known as hg19 in UCSC) is ava
 
 ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/technical/reference/human_g1k_v37.fasta.gz
 
+**Again, need to index the reference gene before running MIPgen or MIPgen_scoring:**
+
+    bwa index human_g1k_v37.fasta
+
 The file used in the example to pull out gene exons for the hg19 human reference (refGene.txt) can be downloaded here: 
 
 http://hgdownload.cse.ucsc.edu/goldenPath/hg19/database/
@@ -142,19 +144,38 @@ Now you can perform designs with MIPgen!
 Here is a design with very basic options.
 Set the path to the genome reference and change the name of the FASTA file if yours is different.
 Make sure you have the dependencies installed or accessible through a given
-path (BWA, tabix, samtools)!
+path (BWA, tabix, samtools, **for MIPgen_scoring: GSL**)!
 
-    ../MIPGEN/mipgen -regions_to_scan practice_genes.bed -project_name practice_design -min_capture_size 162 -max_capture_size 162 -bwa_genome_index /<path to genome reference fasta file>/human_g1k_v37.fa
+**MIPgen_scoring: additional arguments are -initial_panel and -N_reads (described in more detail in the next section).**
+**If no -initial_panel is supplied, MIPgen_scoring will just run MIPgen as created by Evan Boyle.**
+**(dev goal: if no -initial_panel supplied, run MIPgen, then automatically use that as the initial panel for MIPgen_scoring)**
 
-The final selection of MIPs is located in the picked MIPs file
+**To run MIPgen:**
+
+    ../MIPGEN_scoring/mipgen -regions_to_scan practice_genes.bed -project_name practice_design -min_capture_size 162 -max_capture_size 162 -bwa_genome_index /<path to genome reference fasta file>/human_g1k_v37.fa
+
+**To run MIPgen_scoring:**
+
+    ../MIPGEN_scoring/mipgen -regions_to_scan practice_genes.bed -project_name practice_design -min_capture_size 162 -max_capture_size 162 -bwa_genome_index /<path to genome reference fasta file>/human_g1k_v37.fa -score_method "svr" -initial_panel practice_design_mipgen.csv -N_reads 50
+
+**For MIPgen:** The final selection of MIPs is located in the picked MIPs file
 review the scores to make sure the MIPs stand a good chance of success
 (logistic scores below 0.6 are unlikely to provide usable data)
 
     less practice_design.picked_mips.txt
 
-By default all tested MIPs are output; this is a lot of output! (Turn it off with the silent_mode option)
+**Also for MIPgen:** By default all tested MIPs are output; this is a lot of output! (Turn it off with the silent_mode option)
 
     rm practice_design.all_mips.txt
+
+**MIPgen_scoring:** **(in development; not in mipgen_example.tgz)** A summary of all tested panels are output in the all panels file
+with the loss of uniform coverage and the random perturbation for each panel (the initial panel will have NA for random perturbation)
+
+    less practice_design.all_panels.txt
+
+**MIPgen_scoring:** **(in development; not in mipgen_example.tgz)** The final selection of MIPs is located in the final panel file
+
+    less practice_design.final_panel.txt
 
 sai, fq (and sam) files are not deleted automatically and can also take up
 space
@@ -162,6 +183,8 @@ space
     rm -f *.sai *.fq
 
 Generate a UCSC track with another tools script to visualize online
+
+**(note: this is from MIPgen, but I had trouble getting this to work; still need to troubleshoot)**
 
     python ../MIPGEN/tools/generate_ucsc_track.py practice_design.picked_mips.txt practice_ucsc_track
 
@@ -172,6 +195,33 @@ assess predicted performance for these probes)
 -----
 DESCRIPTION OF ALL OPTIONS
 -----
+**MIPgen_scoring additional options:**
+
+    Required parameters to run MIPgen_scoring:
+
+    -initial_panel                  path to csv file of an initial MIP panel for the iterative algorithm,
+                                    described in more detail directly below;
+								    if not provided, will default to running MIPgen as published by Boyle
+    -score_method                   this is the same as MIPgen's, but MIPgen_scoring requires -score_method "svr"
+                                    
+    Other options:
+
+    -N_reads                        desired number of reads for which we want to achieve uniform coverage
+								    default is 100
+
+The file for the initial panel should have one row per MIP with the following columns, in the specified order:
+- **mip_start**: integer for the start position of the MIP scan sequence (between the extension and ligation arms) within the indexed genome.
+- **mip_end**: integer for the end position of the MIP scan sequence (between the extension and ligation arms) within the indexed genome.
+- **ext_len**: integer for the length of the extension arm of the MIP
+- **lig_len**: integer for the length of the ligation arm of the MIP
+- **probe_strand**: takes values + or -
+
+See the mipgen_scoring_example for a sample .csv file that goes with Ellen's run of the MIPGEN example in their original documentation, as well as code to take an output .txt file of picked MIPs from MIPgen and convert to the required .csv format.
+
+**MIPgen options (all of which are stil technically included in MIPgen_scoring):**
+
+**Any required parameter in MIPgen is also a required parameter in MIPgen_scoring**
+
     usage: mipgen (<-parameter_name> <parameter_value>)*
     Created by Evan Boyle (boylee@uw.edu)
     Required parameters:
