@@ -1,4 +1,4 @@
-OBJS = mipgen.o Featurev5.o SVMipv4.o PlusSVMipv4.o MinusSVMipv4.o svm.o
+OBJS = mipgen.o Featurev5.o SVMipv4.o PlusSVMipv4.o MinusSVMipv4.o svm.o -lgsl -lgslcblas -lm
 CC = g++
 DEBUG = -g
 CFLAGS = -Wall -c ${DEBUG}

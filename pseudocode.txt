@@ -1,0 +1,50 @@
+// OVERALL MIP PANEL SCORING (need to split into multiple functions)
+// Currently implemented in the score_mips() function in mipgen.cpp
+
+/* Inputs: vectors of MIP-defining characteristics, where the length of each vector = number of MIPs in panel (see README description of the initial panel for vectors)
+      : N = number of reads we want uniformly - target "horizontal line" after PCR*/
+/* Output: probability of getting 0 reads for all base pair positions along target (criterion to minimize in our iterative algorithm) */
+
+
+// 1. MIP scoring using MIPGEN process	
+for feature (consecutive bp section of target) i:
+	for bp j in feature i:
+		// assuming 1:many relationship between feature and BP
+		mip_idx[j] = {} 
+	for MIP k:
+		if MIP k scan region overlaps feature i:
+			score MIP with SVR scoring
+			back-transform with 10^{svr_score}
+			// assuming 1:many relationship between features and MIP
+			mip_scores[k] = back-transformed score 
+			// efficiency goal: work out min/max statements to only loop over bps when j*==j (eliminate need for `if` statement)
+			for bp j* in MIP k:
+				if j* is a key in the mip_idx unordered map (i.e. j* in k is also a j in i):
+					mip_idx[j*].push_back(k)
+
+// 2. MIP scores to lambdas for Poisson Process
+// (coded up with a `for` loop)
+mip_probs = mip_scores[k] / sum(mip_scores)
+
+// 3. Base pair probabilities of 0 reads, based on lambdas; calculate loss of uniformity metric
+// metric: weighted sum of P(reads = 0) by n(bp)/region
+uniformity_loss = 0;
+for feature i:
+	current_mip_idx = mip_idx[feature_start]
+	n_bp = 1
+	if mip_idx == {}:
+		prob_0 = 1
+	else:
+		prob_0=calculate P(nreads = 0) = "dbinomial"(x=0, N=N, p=sum(mip_probs[mip_idx[feature_start]])))
+	
+	for second bp in feature through end of feature i:
+		if mip_idx[j] == current_mip_idx:
+			n_bp += 1
+		else:
+			uniformity_loss += (prob_0 * n_bp)
+			current_mip_idx = mip_idx[j]
+			n_bp = 1
+			if mip_idx[j] == {}:
+				prob_0 = 1
+			else:
+				prob_0=calculate P(nreads = 0) = "dbinomial"(x=0, N=N, p=sum(mip_probs[mip_idx[j]])))

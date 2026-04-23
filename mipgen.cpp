@@ -17,6 +17,10 @@ Copyright 2014, all rights reserved
 #include <sstream>
 #include <ctype.h>
 #include <errno.h>
+// Additions from Ellen: GSL
+#include <stdio.h>
+#include <gsl/gsl_randist.h>
+// end additions
 #include <boost/shared_ptr.hpp>
 #include <boost/lexical_cast.hpp>
 #include <boost/algorithm/string.hpp>
@@ -25,6 +29,7 @@ Copyright 2014, all rights reserved
 #include "PlusSVMipv4.h"
 #include "MinusSVMipv4.h"
 #include "svm.h"
+
 
 using namespace std;
 
@@ -124,11 +129,16 @@ int starting_mip_overlap;
 int max_capture_size;
 int min_capture_size;
 int capture_increment;
-vector<int> mip_scores;
-unordered_map<int, int> read_depth;
+// additions from ellen
+// variables
 string initial_panel;
 std::map<std::string, std::vector<int>> initial_mips;
 vector<string> initial_pm;
+int N_reads;
+// global objects for iterative algorithm
+int panel_no = 0;
+double unif_loss = 0;
+// end additions
 
 // instantiates a mipgen object with default values for parameters not explicitly set
 mipgen(int argc, char * argv[]) {
@@ -193,7 +203,10 @@ void set_default_args() {
 	args["-max_arm_copy_product"] = "75";
 	args["-target_arm_copy"] = "20";
     args["-bwa_threads"] = "1";
+	// additions from ellen
 	args["-initial_panel"] = "<none>";
+	args["-N_reads"] = "100";
+	// end additions
 }
 // turns parameters into their proper types for easy access by field
 void parse_arg_values() {
@@ -281,13 +294,15 @@ void parse_arg_values() {
 	min_capture_size = boost::lexical_cast<int>(args["-min_capture_size"]);
 	capture_increment = boost::lexical_cast<int>(args["-capture_increment"]);
 	if (capture_increment == 0) capture_increment = 1; // Prevent any strange behavior associated with 0 value
+	// Additions from ellen
 	initial_panel = args["-initial_panel"];
 
 	if (initial_panel != "<none>" && args["-score_method"] != "svr") {
 		cerr << "Algorithm only set up for SVR; cannot proceed" << endl;
 		throw 12;
 	}
-
+	N_reads = boost::lexical_cast<int>(args["-N_reads"]);
+	// end additions
 }
 // prints version and parameters for mipgen run
 void print_header() {
@@ -398,7 +413,7 @@ void query_sequences(){
 		COLLAPSEDMIPS << "_score\tchr\text_probe_start\text_probe_stop\text_probe_copy\text_probe_sequence\tlig_probe_start\tlig_probe_stop\tlig_probe_copy\tlig_probe_sequence\tmip_scan_start_position\tmip_scan_stop_position\tscan_target_sequence\tmip_sequence\tfeature_start_position\tfeature_stop_position\tprobe_strand\tfailure_flags\tmip_name\n";
 		PROGRESS << "file of collapsed mips ready for write: " << project_name << ".collapsed_mips.txt\n";
 
-		PICKEDMIPS.open((project_name + ".initial_picked_mips.txt").c_str());
+		PICKEDMIPS.open((project_name + ".picked_mips.txt").c_str());
 		if (!(PICKEDMIPS.is_open()))
 			throw 14;
 		PICKEDMIPS << ">mip_key\t";
@@ -417,10 +432,9 @@ void query_sequences(){
 			SNPMIPS << "svr";
 		SNPMIPS << "_score\tchr\text_probe_start\text_probe_stop\text_probe_copy\text_probe_sequence\tlig_probe_start\tlig_probe_stop\tlig_probe_copy\tlig_probe_sequence\tmip_scan_start_position\tmip_scan_stop_position\tscan_target_sequence\tmip_sequence\tfeature_start_position\tfeature_stop_position\tprobe_strand\tfailure_flags\tmip_name\n";
 	}
-	// TO DO what files do we want output?
 	else
 	{
-		// all panels considered - see progression of uniform coverage
+		// all panels considered - see progression of uniform coverage and changes considered
 		ALLPANELS.open((project_name + ".all_panels.txt").c_str());
 
 		if (ALLPANELS.is_open())
@@ -430,8 +444,7 @@ void query_sequences(){
 			cerr << "[mipgen] all panels file could not be opened" << endl;
 			throw 12;
 		}
-		// TO DO what features do we want to keep track of here other than coverage uniformity?
-		ALLPANELS << ">panel_key\tpct_coverage\tdepth_stdev\n";
+		ALLPANELS << "panel_number\tunif_loss\trandom_change\n";
 		PROGRESS << "file of all panels ready for write: " << project_name << ".all_panels.txt\n";
 
 		// final panel output (coverage uniformity will be in ALLPANELS file; this will have individual MIPs)
@@ -445,9 +458,10 @@ void query_sequences(){
 			throw 12;
 		}
 		// TO DO ideally we'll want everything here that's in the original MIPgen output? would need to figure out how to get it all for the final panel
-		FINALPANEL << ">mip_key\tcoverage_uniformity\n";
+		FINALPANEL << ">mip_key\tsvr_score\tchr\text_probe_start\text_probe_stop\text_probe_copy\text_probe_sequence\tlig_probe_start\tlig_probe_stop\tlig_probe_copy\tlig_probe_sequence\tmip_scan_start_position\tmip_scan_stop_position\tscan_target_sequence\tmip_sequence\tfeature_start_position\tfeature_stop_position\tprobe_strand\tfailure_flags\tmip_name\n";
 		PROGRESS << "file of final MIP panel ready for write: " << project_name << ".final_panel.txt\n";
 	}
+	// end additions
 }
 // prints MIP data to files and selects a final MIP tiling 
 // this is the main process behind MIP design
@@ -606,24 +620,20 @@ void tile_regions()
 	PROGRESS.close();
 }
 
-// Ellen Wight modified tile regions for iterative algorithm
-// take MIP features as input
+// additions from ellen - modified tile regions for iterative algorithm
+// take MIP features as input and number of reads we want uniformly (default 100)
 // 1. Get SVR scoring for each MIP
-// 2. Aggregate [back-transformed?] SVR scoring for each bp along all features
-// 3. Calculate % coverage of features and sd of read depth
-
-// TO DO write stdev and % coverage to ALLPANELS file every time this function is called
-// TO DO find way to combine stdev and % coverage for metric (or have threshold for % coverage)
-
-// TO DO update README
-// TO D0 include zip file of R script/sample problem that we're using to test, including the csv file of the initial MIP panel
-// TO DO with README, include example commands needed for modified MIPgen
-void score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_len, vector<int>lig_len, vector<string> pm)
+// 2. Track which MIP(s) cover each bp along target
+// 3. Sum probability of 0 reads for each bp along target -> loss of uniform coverage (need to minimize)
+void score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_len, vector<int>lig_len, vector<string> pm, int N_reads)
 {
-	vector<int> mip_scores;
-	unordered_map<int, int> read_depth;
-	cout << "read depth size: " << read_depth.size() << endl;
-	mip_scores.reserve(scan_start.size());  // allocates space, size is still 0
+	cerr << "Number of MIPs in initial panel: " << scan_start.size() << endl;
+	PROGRESS << "Number of MIPs in initial panel: " << scan_start.size() << endl;
+
+	vector<double> mip_scores;
+	mip_scores.resize(scan_start.size()); 
+
+	unordered_map<int, std::vector<int>> mip_idx;
 
 	for (map<int, list<int> >::iterator it = arm_lengths_by_sum.begin(); it != arm_lengths_by_sum.end(); it++)
 		arm_length_sum_set.insert(it->first);
@@ -632,7 +642,8 @@ void score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_le
 	svm_model* model = svm_load_model((file_dir + "mipgen_svr.model").c_str());
 	vector<double> scoring_parameters;
 
-	// loop through each feature
+	// MIP scoring using MIPGEN process
+	// note: `i` in pseudocode.txt; `it` here (matches tile_regions)
 	for (list<Featurev5>::iterator it = features_to_scan.begin(); it != features_to_scan.end(); it++)
 	{
 		// for each feature, get vector of all positions, add svr_score of current MIP to it, also save individual MIP scores?
@@ -640,31 +651,32 @@ void score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_le
 		string chr = feature->chr;
 
 		// instantiate bp map by feature
-		// TO DO - what do we want the limits of this to be?
-		for (size_t k = feature->start_position_flanked; k <= feature->stop_position_flanked; ++k)
+		// TO DO - double check the limits of this
+		for (size_t j = feature->start_position_flanked; j <= feature->stop_position_flanked; ++j)
 		{
 			// each feature should be mutually exclusive, but checking just in case
-			if (read_depth.find(k) == read_depth.end())
+			// i.e. we should be able to assume a 1:many relationship between feature and bp
+			if (mip_idx.find(j) == mip_idx.end())
 			{
-				read_depth[k] = 0;
+				mip_idx[j] = {};
 			}
 		}
 
-		for (size_t i = 0; i < scan_start.size(); ++i)
+		for (size_t k = 0; k < scan_start.size(); ++k)
 		{
 			// only score MIP if it's overlapping the feature
-			if (scan_end[i] >= feature->start_position_flanked &&
-				scan_start[i] < feature->stop_position_flanked)
+			if (scan_end[k] >= feature->start_position_flanked &&
+				scan_start[k] < feature->stop_position_flanked)
 			{
-				// for each MIP, score similar to tile_regions() and add score to read_depth map
-				if (pm[i] == "+")
+				// for each MIP, score similar to tile_regions() and add idx to
+				if (pm[k] == "+")
 				{
 					boost::shared_ptr<PlusSVMipv4> current_plus_mip(new PlusSVMipv4(
 						feature->chr,
-						scan_start[i],
-						scan_end[i],
-						ext_len[i],
-						lig_len[i]
+						scan_start[k],
+						scan_end[k],
+						ext_len[k],
+						lig_len[k]
 					));
 					current_plus_mip->set_scan_target_seq(feature->chromosomal_sequence.substr(current_plus_mip->scan_start_position - feature->chromosomal_sequence_start_position, current_plus_mip->scan_size));
 
@@ -677,22 +689,25 @@ void score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_le
 						designed_plus_mip->get_parameters(scoring_parameters, feature->long_range_content);
 						designed_plus_mip->score = predict_value(scoring_parameters, model);
 					}
-					mip_scores.push_back(designed_plus_mip->score);
-					for (size_t k = scan_start[i]; k < scan_end[i] + 1; ++k)
+					// assuming 1:many relationship between features and MIPs
+					mip_scores[k] = pow(10, designed_plus_mip->score);
+					// TO DO work out min/max statements to only loop over bps when j*==j (see pseudocode)
+					for (size_t j = scan_start[k]; j < scan_end[k] + 1; ++j)
 					{
 						// for uniform coverage calculation, using 10^[svr_score] since svr_score can take negative values? TO DO discuss
-						if (read_depth.find(k) != read_depth.end())
-							read_depth[k] += (pow(10, designed_plus_mip->score) - 0.05);
+						if (mip_idx.find(j) != mip_idx.end())
+							mip_idx[j].push_back(k);
 					}
 				}
-				else if (pm[i] == "-")
+				// repeat same code, but for "-" MIPs (not the most efficient, but easiest way to work with MIPgen objects)
+				else if (pm[k] == "-")
 				{
 					boost::shared_ptr<MinusSVMipv4> current_minus_mip(new MinusSVMipv4(
 						feature->chr,
-						scan_start[i],
-						scan_end[i],
-						ext_len[i],
-						lig_len[i]
+						scan_start[k],
+						scan_end[k],
+						ext_len[k],
+						lig_len[k]
 					));
 					current_minus_mip->set_scan_target_seq(feature->chromosomal_sequence.substr(current_minus_mip->scan_start_position - feature->chromosomal_sequence_start_position, current_minus_mip->scan_size));
 
@@ -705,55 +720,91 @@ void score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_le
 						designed_minus_mip->get_parameters(scoring_parameters, feature->long_range_content);
 						designed_minus_mip->score = predict_value(scoring_parameters, model);
 					}
-					mip_scores.push_back(designed_minus_mip->score);
-					for (size_t k = scan_start[i]; k < scan_end[i] + 1; ++k)
+					mip_scores[k] = pow(10, designed_minus_mip->score);
+					for (size_t j = scan_start[k]; j < scan_end[k] + 1; ++j)
 					{
-						if (read_depth.find(k) != read_depth.end())
-							read_depth[k] += (pow(10,designed_minus_mip->score) - 0.05);
+						if (mip_idx.find(j) != mip_idx.end())
+							mip_idx[j].push_back(k);
 					}
+
 				}
 			}
 		}
 	}
-	// panel metrics
-	cout << "Number of MIPs scored: " << mip_scores.size() << endl;
 
-	// measure 1: % of features covered
-	int n_covered = 0;
-	int n_total = 0;
-	for (const auto& [key, value] : read_depth) {
-		n_total += 1;
-		if (value > 0) {
-			n_covered += 1;
+	// MIP scores to lambdas for the Poisson Process -> multinomial -> binomial
+	double sum_scores = 0;
+	for (const auto& value : mip_scores) {
+		sum_scores += value;
+	}
+
+	vector<double> mip_lambdas;
+	mip_lambdas.resize(scan_start.size());
+	for (size_t k = 0; k < mip_scores.size(); ++k) {
+		mip_lambdas[k] = mip_scores[k] / sum_scores;
+	}
+
+	// Probabilities of 0 reads for each base pair; calculate loss of uniformity metric
+	int n_bp;
+	double prob_0;
+	double bp_prob;
+
+	for (list<Featurev5>::iterator it = features_to_scan.begin(); it != features_to_scan.end(); it++)
+	{
+		feature = &*it;
+		
+		int feature_start = feature->start_position_flanked;
+		std::vector<int> current_mip_idx = mip_idx[feature_start];
+		n_bp = 1;
+		if (mip_idx[feature_start].empty()) {
+			prob_0 = 1;
 		}
 		else {
-			cout << key << " not covered" << endl;
+			bp_prob = 0;
+			for (const auto& k : current_mip_idx) {
+				bp_prob += mip_lambdas[k];
+			}
+			prob_0 = gsl_ran_binomial_pdf(0, bp_prob, N_reads);
+		}
+		for (size_t j = feature_start + 1; j <= feature->stop_position_flanked; ++j) {
+			if (mip_idx[j] == current_mip_idx) {
+				n_bp += 1;
+			}
+			else {
+				unif_loss += ((double)prob_0 * n_bp);
+
+				current_mip_idx = mip_idx[j];
+				n_bp = 1;
+				if (mip_idx[j].empty()) {
+					prob_0 = 1;
+				}
+				else {
+					bp_prob = 0;
+					for (const auto& k : current_mip_idx) {
+						bp_prob += mip_lambdas[k];
+					}
+					prob_0 = gsl_ran_binomial_pdf(0, bp_prob, N_reads);
+				}
+			}
 		}
 	}
-	double pct_coverage;
-	pct_coverage = n_covered / n_total;
-
-	cout << pct_coverage*100 << "% of feature bps covered" << endl;
-
-	// measure 2: of covered bp, stdev of read depth
-	double sum_rd = 0;
-	for (const auto& [key, value] : read_depth) {
-		sum_rd += value;
+	cerr << "Loss of uniform coverage calculated for panel " << panel_no << endl;
+	PROGRESS << "Loss of uniform coverage calculated for panel " << panel_no << endl;
+	// TEMPORARY (especially .close) - move elsewhere later
+	if (ALLPANELS.is_open()) {
+		ALLPANELS << panel_no << "\t" << unif_loss << "\tNA\n";
+	}
+	else {
+		std::cerr << "Unable to write to file";
 	}
 
-	double mean_rd = sum_rd / n_covered;
-	cout << "Mean of read depths > 0 (transformed): " << mean_rd << endl;
-
-	double var_rd = 0;
-	for (const auto& [key, value] : read_depth)
-	{
-		if (value > 0)
-			var_rd += (value - mean_rd) * (value - mean_rd);
-	}
-	var_rd /= n_covered;
-	double sd_rd = sqrt(var_rd);
-	cout << "Standard deviation of read depths > 0 (transformed): " << sd_rd << endl;
+	ALLPANELS.close();
+	// TO DO figure out how to print final MIPs to FINALPANEL with print_details (same format as MIPgen)
+	FINALPANEL.close();
+	PROGRESS.close();
 }
+// end additions
+
 
 // uses BWA to find probe and target copy numbers
 void find_copy ()
@@ -993,6 +1044,7 @@ string print_details (Featurev5 * feature, boost::shared_ptr<SVMipv4> mip, int m
 	ss << feature->label << "_" << setw(4) << setfill('0') << mip_index << (mip->snp_count == 1 ? ("_SNP_" + string(minor ? "b" : "a")) : "") << "\n";
 	return ss.str();
 }
+
 // uses bwa to check that targets map uniquely
 string check_copy_numbers()
 {
@@ -1243,7 +1295,7 @@ string get_features_to_scan()
 	return "successfully loaded features for mip design; retrieving chromosomal sequence\n";
 }
 
-// Ellen Wight addition - read in CSV of MIPs (specific format)
+// additions from Ellen - read in CSV of MIPs (specific format)
 // goal: make this more flexible (maybe be able to read in the final picked_mips file from standard MIPgen instead of a cleaned version)
 void get_initial_panel()
 {
@@ -1289,6 +1341,7 @@ void get_initial_panel()
 	file.close();
 	cout << "finished reading in initial MIP panel" << endl;
 }
+// end additions
 
 // uses Tandem Repeats Finder to mask tandem repeats
 bool get_masked_features_to_scan()
@@ -1534,7 +1587,7 @@ string parse_command_line(int argc, char * argv[])
 		-masked_arm_threshold -seal_both_strands -half_seal_both_strands -tag_sizes -ext_min_length -lig_min_length -bwa_threads \
 		-snp_file -double_tile_strand_unaware -double_tile_strands_separately -score_method -logistic_heuristic -file_of_parameters \
 		-logistic_priority_score -svr_priority_score -logistic_optimal_score -svr_optimal_score -max_arm_copy_product -target_arm_copy \
-		-initial_panel";
+		-initial_panel -N_reads";
 	vector<string> option_vector;
 	boost::split(option_vector, all_options, boost::is_any_of(" \t"), boost::token_compress_on);
 	string splash = "\n\
@@ -1665,7 +1718,9 @@ Miscellaneous:\n\
 Additions from Ellen:\n\
 \n\
 -initial_panel					path to csv file of an initial MIP panel for the selection algorithm; \n\
-								if not provided, will default to running MIPgen as published by Boyle\n";
+								if not provided, will default to running MIPgen as published by Boyle\n\
+-N_reads						desired number of reads to achieve uniform coverage for \n\
+								default is 100\n";
 
 	if(argc == 1) return splash;
 	else if(string(argv[1])=="-doc") return doc;
@@ -2280,10 +2335,9 @@ int main(int argc, char * argv[]) {
 		mg->print_header();
 		mg->query_sequences();
 
-		// Ellen Wight modifications to main: algorithmic approach
-
-		// if initial panel not given, simply run regular MIPgen
-		// goal: if initial panel not given, run regular MIPgen, then use its final output as the initial panel for our algorithm
+		// additions from ellen
+		// if initial panel not given, run original MIPgen
+		// goal: if initial panel not given, run original MIPgen, then use its final output as the initial panel for our algorithm
 		if(mg->initial_panel == "<none>") 
 		{
 			mg->tile_regions();
@@ -2294,18 +2348,14 @@ int main(int argc, char * argv[]) {
 			if (mg->initial_pm.size() != mg->initial_mips.at("mip_start").size())
 				throw 100;
 
-			cerr << "Number of MIPs in initial panel: " << mg->initial_pm.size() << endl;
-
 			mg->score_mips(
 				mg->initial_mips.at("mip_start"),
 				mg->initial_mips.at("mip_end"),
 				mg->initial_mips.at("ext_len"),
 				mg->initial_mips.at("lig_len"),
-				mg->initial_pm
+				mg->initial_pm,
+				mg->N_reads
 				);
-
-			// TO DO uniform coverage calculation + write to file for each iteration
-				// specific tasks for this commented above score_mips() function definition
 
 			// TO DO ~~algorithm~~
 				// 1. changing mip_start/mip_end, 1-2 probes at a time
@@ -2314,13 +2364,9 @@ int main(int argc, char * argv[]) {
 				// use Claude to explore algorithm options/help write code to implement
 
 			// TO DO write final MIP panel to file (individual MIPs)
-
-			// Algorithm notes:
-				// start with memoryless process - how to make sure we get the best panel at the end if we don't save info?
-					// maybe just brush up on your algorithms Ellen...
-					// maybe save mip panel w/ its uniform coverage for each iteration, json structure-ish style
-				// each iteration, just move around a little - one probe or pair of probes at a time
+				// figure out how to do this matching MIPgen's output
 		}
+		// end additions
 		
 	} catch (int e) {
 		if(e == 1) { }

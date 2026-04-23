@@ -1,0 +1,22 @@
+TO DO
+- split score_mips() into several functions so small changes to panel can be rescored efficiently (whiteboard this out)
+- figure out how to output final panel in the same format as MIPgen's final picked MIPs (print_details() function)
+	- each call to print_details() requires feature, MIP, and index value for identifiability - loop through final panel?
+- code up functions for iterative algorithm (start with 50 runs):
+	- perturbation of MIPs
+	- rescoring of panel after perturbation
+	- comparison of new unif_loss to previous unif_loss
+	- if better, keep change; if worse, go back to previous panel
+	- output loss score AND change to panel for each perturbation
+
+
+COMPLETED
+
+4/23 commit "update documentation; score_mips() implementation from pseudocode.txt"
+- added GNU-GSL dependency, updated makefile so GNU could be used in mipgen.cpp
+- implemented code to get loss of uniformity metric from initial panel (score_mips() function)
+	- spot check of MIP scores, MIP lambdas, base pair probability for binom, and binom pdf revealed no issues
+- output loss of uniformity to ALLPANELS file
+- all changes in mipgen.cpp enclosed by "additions from ellen" / "end additions" comments
+- troubleshooting having regular MIPgen run when no initial panel filepath supplied - working for EMW (have KD check)
+- pseudocode uploaded in .txt file
