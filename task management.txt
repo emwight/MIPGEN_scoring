@@ -1,16 +1,20 @@
 TO DO
-- split score_mips() into several functions so small changes to panel can be rescored efficiently (whiteboard this out)
-- figure out how to output final panel in the same format as MIPgen's final picked MIPs (print_details() function)
-	- each call to print_details() requires feature, MIP, and index value for identifiability - loop through final panel?
 - code up functions for iterative algorithm (start with 50 runs):
 	- perturbation of MIPs
 	- rescoring of panel after perturbation
 	- comparison of new unif_loss to previous unif_loss
 	- if better, keep change; if worse, go back to previous panel
 	- output loss score AND change to panel for each perturbation
+- figure out how to output final panel in the same format as MIPgen's final picked MIPs (print_details() function)
+	- each call to print_details() requires feature, MIP, and index value for identifiability - loop through final panel?
 
+LATER GOALS
+- Efficiency: split score_mips() into several functions so small changes for panel rescoring
+- Usability: If no initial panel filepath supplied, run MIPGEN, then immediately run MIPGEN_scoring after (no need to convert .txt to .csv)
 
 COMPLETED
+4/24 commit "update README.md"
+- update README to clarify how to get a .csv file for MIPGEN_scoring from the output picked_mips.txt file from MIPGEN
 
 4/23 commit "update documentation; score_mips() implementation from pseudocode.txt"
 - added GNU-GSL dependency, updated makefile so GNU could be used in mipgen.cpp
