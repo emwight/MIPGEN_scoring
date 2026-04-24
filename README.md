@@ -146,9 +146,10 @@ Set the path to the genome reference and change the name of the FASTA file if yo
 Make sure you have the dependencies installed or accessible through a given
 path (BWA, tabix, samtools, **for MIPgen_scoring: GSL**)!
 
-**MIPgen_scoring: additional arguments are -initial_panel and -N_reads**
-**(described in more detail in the next section, including how to get a correctly formatted initial panel from MIPgen output)**
+**MIPgen_scoring: additional arguments are -initial_panel and -N_reads (described in more detail in the next section, including how to get a correctly formatted initial panel from MIPgen output)**
+
 **If no -initial_panel is supplied, MIPgen_scoring will just run MIPgen as created by Evan Boyle.**
+
 **(dev goal: if no -initial_panel supplied, run MIPgen, then automatically use that as the initial panel for MIPgen_scoring)**
 
 **To run MIPgen:**
@@ -174,7 +175,7 @@ with the loss of uniform coverage and the random perturbation for each panel (th
 
     less practice_design.all_panels.txt
 
-**MIPgen_scoring:** **(in development; not in mipgen_example.tgz)** The final selection of MIPs is located in the final panel file
+**MIPgen_scoring:** **(in development; not in mipgen_example.tgz or mipgen_scoring_example)** The final selection of MIPs is located in the final panel file
 
     less practice_design.final_panel.txt
 
@@ -217,8 +218,8 @@ The file for the initial panel should have one row per MIP with the following co
 - **lig_len**: integer for the length of the ligation arm of the MIP
 - **probe_strand**: takes values + or -
 
-If starting with the selected MIPs from MIPgen (<project_name>.picked_mips.txt), use the `Initial panel from original MIPGEN output.R` script in the mipgen_scoring_example folder.
-The resulting .csv file output from the script can then be put into MIPgen_scoring.
+If starting with the selected MIPs from MIPgen (<project_name>.picked_mips.txt), use the `Initial panel from original MIPGEN output.R` script in the mipgen_scoring_example folder. The resulting .csv file output from the script can then be put into MIPgen_scoring.
+
 See the mipgen_scoring_example for a sample .csv file that goes with Ellen's run of the MIPGEN example in their original documentation, 
 
 **MIPgen options (all of which are stil technically included in MIPgen_scoring):**
