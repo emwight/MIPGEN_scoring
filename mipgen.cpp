@@ -19,7 +19,9 @@ Copyright 2014, all rights reserved
 #include <errno.h>
 // Additions from Ellen: GSL
 #include <stdio.h>
-#include <gsl/gsl_randist.h>
+#include <gsl/gsl_randist.h> // binomial pdf
+#include <gsl/gsl_rng.h> // random number generation for perturbation
+#include <time.h>
 // end additions
 #include <boost/shared_ptr.hpp>
 #include <boost/lexical_cast.hpp>
@@ -130,14 +132,14 @@ int max_capture_size;
 int min_capture_size;
 int capture_increment;
 // additions from ellen
-// variables
+// input variables
 string initial_panel;
-std::map<std::string, std::vector<int>> initial_mips;
-vector<string> initial_pm;
 int N_reads;
 // global objects for iterative algorithm
-int panel_no = 0;
-double unif_loss = 0;
+std::map<std::string, std::vector<int>> panel_pos;
+vector<string> panel_pm;
+// TO DO: add this as an optional argument, along with set_seed
+int n_iter = 2000;
 // end additions
 
 // instantiates a mipgen object with default values for parameters not explicitly set
@@ -444,7 +446,8 @@ void query_sequences(){
 			cerr << "[mipgen] all panels file could not be opened" << endl;
 			throw 12;
 		}
-		ALLPANELS << "panel_number\tunif_loss\trandom_change\n";
+		// loss of uniform coverage, change proposed, and whether it was accepted
+		ALLPANELS << "unif_loss\tmip_changed\tpos_changed\tamt_changed\tdecision\n";
 		PROGRESS << "file of all panels ready for write: " << project_name << ".all_panels.txt\n";
 
 		// final panel output (coverage uniformity will be in ALLPANELS file; this will have individual MIPs)
@@ -457,7 +460,7 @@ void query_sequences(){
 			cerr << "[mipgen] final MIP panel file could not be opened" << endl;
 			throw 12;
 		}
-		// TO DO ideally we'll want everything here that's in the original MIPgen output? would need to figure out how to get it all for the final panel
+		// Keeping this consistent with MIPGEN formatting
 		FINALPANEL << ">mip_key\tsvr_score\tchr\text_probe_start\text_probe_stop\text_probe_copy\text_probe_sequence\tlig_probe_start\tlig_probe_stop\tlig_probe_copy\tlig_probe_sequence\tmip_scan_start_position\tmip_scan_stop_position\tscan_target_sequence\tmip_sequence\tfeature_start_position\tfeature_stop_position\tprobe_strand\tfailure_flags\tmip_name\n";
 		PROGRESS << "file of final MIP panel ready for write: " << project_name << ".final_panel.txt\n";
 	}
@@ -620,16 +623,232 @@ void tile_regions()
 	PROGRESS.close();
 }
 
-// additions from ellen - modified tile regions for iterative algorithm
+// additions from ellen
+// iter_panel: iterative algorithm to explore MIP panel space, compare via loss of coverage uniformity
+// this is the main process behind MIP_scoring (I should really rename this fork to MIP_iter or something)
+void iter_panel() {
+	svm_model* model = svm_load_model((file_dir + "mipgen_svr.model").c_str());
+	double current_loss;
+	double new_loss;
+	vector<int> panel_change;
+	vector<int> panel_change2; // for shifting MIPs - changing both scan_start and scan_end
+	vector<string> pos_changes = {"ext_len", "lig_len", "scan_start", "scan_end", "scan_shift"};
+
+	// Set up randomization
+	int mip_change;
+	int pos_change;
+	int amt_change;
+	int dir_change;
+	gsl_rng* generator;
+
+	// start with Mersenne Twister, set seed for reproducibility 
+	// TO DO explore different RNG algorithm options?
+	// (TO DO set seed to current time as default, let user input seed)
+	generator = gsl_rng_alloc(gsl_rng_mt19937);
+	gsl_rng_set(generator, 1234);
+	// gsl_rng_set(generator, time(NULL));
+	
+	// 1. Read in and score initial panel from user-defined filepath
+	get_initial_panel();
+
+	int n_mips = panel_pos.at("mip_start").size();
+
+	cerr << "Number of MIPs in initial panel: " << n_mips << endl;
+	PROGRESS << "Number of MIPs in initial panel: " << n_mips;
+
+	current_loss = score_mips(
+		panel_pos.at("mip_start"),
+		panel_pos.at("mip_end"),
+		panel_pos.at("ext_len"),
+		panel_pos.at("lig_len"),
+		panel_pm,
+		// redundant since calling it each time, but didn't want to make 'model' global
+		// in case that caused issues with tile_regions
+		model,
+		false);
+
+	cerr << "Loss of uniform coverage calculated for initial panel: " << current_loss << endl;
+	PROGRESS << "Loss of uniform coverage calculated for initial panel";
+	ALLPANELS << current_loss << "\tNA\tNA\tNA\tNA\n";
+	
+	// 2. Compare random changes to current "best" uniformity metric
+	// stopping after n_iter iterations (TO DO have some convergence metric to stop at, with n_iter being max)	
+	for (size_t i = 0; i < n_iter; ++i) {
+		mip_change = gsl_rng_uniform_int(generator, n_mips);
+		pos_change = gsl_rng_uniform_int(generator, 5);
+		dir_change = (gsl_rng_uniform_int(generator, 2) == 0) ? -1 : 1;
+
+		// each iteration: score panel with the proposed changes as "new_loss", compare to our best so far "current_loss"
+		// if better (looking to minimize), save the proposed change and update "current_loss"
+
+		// ext_len: only changing by +-1 at a time, so this is already taken care of via dir_change
+		if (pos_change == 0) {
+			panel_change = panel_pos.at("ext_len");
+			panel_change[mip_change] += dir_change;
+
+			new_loss = score_mips(
+				panel_pos.at("mip_start"),
+				panel_pos.at("mip_end"),
+				panel_change,
+				panel_pos.at("lig_len"),
+				panel_pm,
+				model,
+				false);
+
+			if (new_loss < current_loss) {
+				ALLPANELS << new_loss << "\t" << mip_change << "\t" << pos_changes[pos_change] << "\t" << dir_change << "\t" << "accept" << "\n";
+				current_loss = new_loss;
+				panel_pos.at("ext_len") = panel_change;
+			}
+			else {
+				ALLPANELS << new_loss << "\t" << mip_change << "\t" << pos_changes[pos_change] << "\t" << dir_change << "\t" << "reject" << "\n";
+			}
+		}
+		// lig_len - same process as ext_len
+		else if (pos_change == 1) {
+			panel_change = panel_pos.at("lig_len");
+			panel_change[mip_change] += dir_change;
+
+			new_loss = score_mips(
+				panel_pos.at("mip_start"),
+				panel_pos.at("mip_end"),
+				panel_pos.at("ext_len"),
+				panel_change,
+				panel_pm,
+				model,
+				false);
+
+			if (new_loss < current_loss) {
+				ALLPANELS << new_loss << "\t" << mip_change << "\t" << pos_changes[pos_change] << "\t" << dir_change << "\t" << "accept" << "\n";
+				current_loss = new_loss;
+				panel_pos.at("lig_len") = panel_change;
+			}
+			else {
+				ALLPANELS << new_loss << "\t" << mip_change << "\t" << pos_changes[pos_change] << "\t" << dir_change << "\t" << "reject" << "\n";
+			}
+		}
+		// scan_start: can change by up to +-5
+		else if (pos_change == 2) {
+			amt_change = (gsl_rng_uniform_int(generator, 5) + 1) * dir_change;
+
+			panel_change = panel_pos.at("mip_start");
+			panel_change[mip_change] += amt_change;
+
+			new_loss = score_mips(
+				panel_change,
+				panel_pos.at("mip_end"),
+				panel_pos.at("ext_len"),
+				panel_pos.at("lig_len"),
+				panel_pm,
+				model,
+				false);
+
+			if (new_loss < current_loss) {
+				ALLPANELS << new_loss << "\t" << mip_change << "\t" << pos_changes[pos_change] << "\t" << amt_change << "\t" << "accept" << "\n";
+				current_loss = new_loss;
+				panel_pos.at("mip_start") = panel_change;
+			}
+			else {
+				ALLPANELS << new_loss << "\t" << mip_change << "\t" << pos_changes[pos_change] << "\t" << amt_change << "\t" << "reject" << "\n";
+			}
+		}
+		// scan_end: same process as scan_start
+		else if (pos_change == 3) {
+			amt_change = (gsl_rng_uniform_int(generator, 5) + 1) * dir_change;
+
+			panel_change = panel_pos.at("mip_end");
+			panel_change[mip_change] += amt_change;
+
+			new_loss = score_mips(
+				panel_pos.at("mip_start"),
+				panel_change,
+				panel_pos.at("ext_len"),
+				panel_pos.at("lig_len"),
+				panel_pm,
+				model,
+				false);
+
+			if (new_loss < current_loss) {
+				ALLPANELS << new_loss << "\t" << mip_change << "\t" << pos_changes[pos_change] << "\t" << amt_change << "\t" << "accept" << "\n";
+				current_loss = new_loss;
+				panel_pos.at("mip_end") = panel_change;
+			}
+			else {
+				ALLPANELS << new_loss << "\t" << mip_change << "\t" << pos_changes[pos_change] << "\t" << amt_change << "\t" << "reject" << "\n";
+			}
+		}
+		// shift scan_start and scan_end by the same amount: can change by up to +-10
+		else if (pos_change == 4) {
+			amt_change = (gsl_rng_uniform_int(generator, 10) + 1) * dir_change;
+
+			panel_change = panel_pos.at("mip_start");
+			panel_change[mip_change] += amt_change;
+			panel_change2 = panel_pos.at("mip_end");
+			panel_change2[mip_change] += amt_change;
+
+			new_loss = score_mips(
+				panel_change,
+				panel_change2,
+				panel_pos.at("ext_len"),
+				panel_pos.at("lig_len"),
+				panel_pm,
+				model,
+				false);
+
+			if (new_loss < current_loss) {
+				ALLPANELS << new_loss << "\t" << mip_change << "\t" << pos_changes[pos_change] << "\t" << amt_change << "\t" << "accept" << "\n";
+				current_loss = new_loss;
+				panel_pos.at("mip_start") = panel_change;
+				panel_pos.at("mip_end") = panel_change2;
+			}
+			else {
+				ALLPANELS << new_loss << "\t" << mip_change << "\t" << pos_changes[pos_change] << "\t" << amt_change << "\t" << "reject" << "\n";
+			}
+		}
+		// progress bar
+		if (((i + 1) % 100) == 0) {
+			cerr << i + 1 << " iterations completed" << endl;
+		}
+		// making sure changes are saved correctly
+		/*
+		for (size_t k = 0; k < panel_pm.size(); ++k) {
+			cerr << "mip " << k << ": " << panel_pos.at("mip_start")[k] << ", " << panel_pos.at("mip_end")[k] << ", " << panel_pos.at("ext_len")[k] << ", " << panel_pos.at("lig_len")[k] << endl;
+		}
+		*/
+	}
+	
+	// output final MIP panel to FINALPANEL file 
+	score_mips(
+		panel_pos.at("mip_start"),
+		panel_pos.at("mip_end"),
+		panel_pos.at("ext_len"),
+		panel_pos.at("lig_len"),
+		panel_pm,
+		model,
+		true);
+	
+	// old code from when we weren't outputting the same format as MIPGEN
+	/*
+	for (size_t i = 0; i < panel_pm.size(); ++i) {
+		FINALPANEL << i << "\t" << panel_pos.at("mip_start")[i] << "\t" << panel_pos.at("mip_end")[i] << "\t" << panel_pos.at("ext_len")[i] << "\t" << panel_pos.at("lig_len")[i] << "\t" << panel_pm[i] << "\n";
+	}
+	*/
+
+	svm_free_and_destroy_model(&model);
+	ALLPANELS.close();
+	FINALPANEL.close();
+	PROGRESS.close();
+}
+
+// score_mips: modified tile regions for iterative algorithm
 // take MIP features as input and number of reads we want uniformly (default 100)
 // 1. Get SVR scoring for each MIP
 // 2. Track which MIP(s) cover each bp along target
 // 3. Sum probability of 0 reads for each bp along target -> loss of uniform coverage (need to minimize)
-void score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_len, vector<int>lig_len, vector<string> pm, int N_reads)
+// 4. Return loss of uniform coverage
+double score_mips(const vector<int>& scan_start, const vector<int>& scan_end, const vector<int>& ext_len, const vector<int>& lig_len, const vector<string>& pm,
+	svm_model* model, bool print_panel)
 {
-	cerr << "Number of MIPs in initial panel: " << scan_start.size() << endl;
-	PROGRESS << "Number of MIPs in initial panel: " << scan_start.size() << endl;
-
 	vector<double> mip_scores;
 	mip_scores.resize(scan_start.size()); 
 
@@ -639,7 +858,6 @@ void score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_le
 		arm_length_sum_set.insert(it->first);
 
 	Featurev5* feature;
-	svm_model* model = svm_load_model((file_dir + "mipgen_svr.model").c_str());
 	vector<double> scoring_parameters;
 
 	// MIP scoring using MIPGEN process
@@ -690,13 +908,18 @@ void score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_le
 						designed_plus_mip->score = predict_value(scoring_parameters, model);
 					}
 					// assuming 1:many relationship between features and MIPs
+					// cerr << "score for mip " << k << ": " << pow(10, designed_plus_mip->score) << endl;
 					mip_scores[k] = pow(10, designed_plus_mip->score);
 					// TO DO work out min/max statements to only loop over bps when j*==j (see pseudocode)
 					for (size_t j = scan_start[k]; j < scan_end[k] + 1; ++j)
 					{
-						// for uniform coverage calculation, using 10^[svr_score] since svr_score can take negative values? TO DO discuss
 						if (mip_idx.find(j) != mip_idx.end())
 							mip_idx[j].push_back(k);
+					}
+					// printing within score_mips since print_details requires feature along with MIP
+					// and this loops through all that anyways
+					if (print_panel) {
+						FINALPANEL << print_details(feature, designed_plus_mip, k, false);
 					}
 				}
 				// repeat same code, but for "-" MIPs (not the most efficient, but easiest way to work with MIPgen objects)
@@ -720,13 +943,16 @@ void score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_le
 						designed_minus_mip->get_parameters(scoring_parameters, feature->long_range_content);
 						designed_minus_mip->score = predict_value(scoring_parameters, model);
 					}
+					// cerr << "score for mip " << k << ": " << pow(10, designed_minus_mip->score) << endl;
 					mip_scores[k] = pow(10, designed_minus_mip->score);
 					for (size_t j = scan_start[k]; j < scan_end[k] + 1; ++j)
 					{
 						if (mip_idx.find(j) != mip_idx.end())
 							mip_idx[j].push_back(k);
 					}
-
+					if (print_panel) {
+						FINALPANEL << print_details(feature, designed_minus_mip, k, false);
+					}
 				}
 			}
 		}
@@ -738,16 +964,21 @@ void score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_le
 		sum_scores += value;
 	}
 
+	// cerr << "sum scores: " << sum_scores << endl;
+
 	vector<double> mip_lambdas;
 	mip_lambdas.resize(scan_start.size());
 	for (size_t k = 0; k < mip_scores.size(); ++k) {
 		mip_lambdas[k] = mip_scores[k] / sum_scores;
+		// cerr << "lambda for mip " << k << ": " << mip_scores[k] / sum_scores << endl;
 	}
 
 	// Probabilities of 0 reads for each base pair; calculate loss of uniformity metric
-	int n_bp;
-	double prob_0;
-	double bp_prob;
+	int n_bp = 0;
+	double prob_0 = 0.0;
+	double bp_prob = 0.0;
+	double unif_loss = 0.0;
+	int total_n_bp = 0;
 
 	for (list<Featurev5>::iterator it = features_to_scan.begin(); it != features_to_scan.end(); it++)
 	{
@@ -756,6 +987,7 @@ void score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_le
 		int feature_start = feature->start_position_flanked;
 		std::vector<int> current_mip_idx = mip_idx[feature_start];
 		n_bp = 1;
+		total_n_bp += 1;
 		if (mip_idx[feature_start].empty()) {
 			prob_0 = 1;
 		}
@@ -767,10 +999,16 @@ void score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_le
 			prob_0 = gsl_ran_binomial_pdf(0, bp_prob, N_reads);
 		}
 		for (size_t j = feature_start + 1; j <= feature->stop_position_flanked; ++j) {
+			total_n_bp += 1;
 			if (mip_idx[j] == current_mip_idx) {
 				n_bp += 1;
 			}
 			else {
+				//cerr << "bp_prob: " << bp_prob << endl;
+				//cerr << "n_bp: " << n_bp << endl;
+				//cerr << "dbinom: " << prob_0 << endl;
+				//cerr << "total bp processed: " << total_n_bp << endl;
+				
 				unif_loss += ((double)prob_0 * n_bp);
 
 				current_mip_idx = mip_idx[j];
@@ -787,21 +1025,12 @@ void score_mips(vector<int> scan_start, vector<int> scan_end, vector<int> ext_le
 				}
 			}
 		}
+		// correction from last commit: add final region for each feature
+		unif_loss += ((double)prob_0 * n_bp);
 	}
-	cerr << "Loss of uniform coverage calculated for panel " << panel_no << endl;
-	PROGRESS << "Loss of uniform coverage calculated for panel " << panel_no << endl;
-	// TEMPORARY (especially .close) - move elsewhere later
-	if (ALLPANELS.is_open()) {
-		ALLPANELS << panel_no << "\t" << unif_loss << "\tNA\n";
-	}
-	else {
-		std::cerr << "Unable to write to file";
-	}
-
-	ALLPANELS.close();
-	// TO DO figure out how to print final MIPs to FINALPANEL with print_details (same format as MIPgen)
-	FINALPANEL.close();
-	PROGRESS.close();
+	//cerr << "unif loss: " << unif_loss << endl;
+	//cerr << "total bp processed: " << total_n_bp << endl;
+	return unif_loss;
 }
 // end additions
 
@@ -1317,7 +1546,7 @@ void get_initial_panel()
 		while (getline(ss, cell, ',')) {
 			header.push_back(cell);
 			if(cell != "probe_strand") 
-				initial_mips[cell] = {};
+				panel_pos[cell] = {};
 		}
 	}
 
@@ -1331,9 +1560,9 @@ void get_initial_panel()
 		while (std::getline(ss, cell, ',')) {			
 			if (i < header.size()) {
 				if (header[i] != "probe_strand")
-					initial_mips[header[i]].push_back(std::stoi(cell));
+					panel_pos[header[i]].push_back(std::stoi(cell));
 				else if (header[i] == "probe_strand")
-					initial_pm.push_back(cell);
+					panel_pm.push_back(cell);
 			}
 			i++;
 		}
@@ -2344,27 +2573,7 @@ int main(int argc, char * argv[]) {
 		}
 		else
 		{
-			mg->get_initial_panel();
-			if (mg->initial_pm.size() != mg->initial_mips.at("mip_start").size())
-				throw 100;
-
-			mg->score_mips(
-				mg->initial_mips.at("mip_start"),
-				mg->initial_mips.at("mip_end"),
-				mg->initial_mips.at("ext_len"),
-				mg->initial_mips.at("lig_len"),
-				mg->initial_pm,
-				mg->N_reads
-				);
-
-			// TO DO ~~algorithm~~
-				// 1. changing mip_start/mip_end, 1-2 probes at a time
-				// 2. changing ext_len/lig_len, 1-2 probes at a time
-				// for now, don't change +/- strand or number of MIPs
-				// use Claude to explore algorithm options/help write code to implement
-
-			// TO DO write final MIP panel to file (individual MIPs)
-				// figure out how to do this matching MIPgen's output
+			mg->iter_panel();
 		}
 		// end additions
 		

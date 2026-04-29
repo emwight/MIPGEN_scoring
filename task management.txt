@@ -1,18 +1,25 @@
 TO DO
-- code up functions for iterative algorithm (start with 50 runs):
+- add optional arguments: n_iter (default 2000?) and set_seed (default current time)
+- add pseudocode for iter_panel
+- add complete example run to repo
+
+LATER GOALS
+- Efficiency: split score_mips() into several functions so small changes for panel rescoring
+- Usability: If no initial panel filepath supplied, run MIPGEN, then immediately run MIPGEN_scoring after (no need to convert .txt to .csv)
+- Explore different RNG algorithm options?
+- Figure out "convergence" metric for unif_loss
+
+COMPLETED
+4/29 commit "iterative algorithm implemented via iter_panel(); fix to score_mips()"
+- fixed score_mips: add final region for each feature to unif_loss
+- code up functions for iterative algorithm (naive, no checks on validity of MIPs, assuming MIPgen scoring will help take care of that until we can put constraints in):
 	- perturbation of MIPs
 	- rescoring of panel after perturbation
 	- comparison of new unif_loss to previous unif_loss
 	- if better, keep change; if worse, go back to previous panel
 	- output loss score AND change to panel for each perturbation
-- figure out how to output final panel in the same format as MIPgen's final picked MIPs (print_details() function)
-	- each call to print_details() requires feature, MIP, and index value for identifiability - loop through final panel?
+- output final panel in the same format as MIPgen's final picked MIPs via the print_details() function
 
-LATER GOALS
-- Efficiency: split score_mips() into several functions so small changes for panel rescoring
-- Usability: If no initial panel filepath supplied, run MIPGEN, then immediately run MIPGEN_scoring after (no need to convert .txt to .csv)
-
-COMPLETED
 4/24 commit "update README.md"
 - update README to clarify how to get a .csv file for MIPGEN_scoring from the output picked_mips.txt file from MIPGEN
 

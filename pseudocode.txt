@@ -48,3 +48,8 @@ for feature i:
 				prob_0 = 1
 			else:
 				prob_0=calculate P(nreads = 0) = "dbinomial"(x=0, N=N, p=sum(mip_probs[mip_idx[j]])))
+	// final region in each feature
+	uniformity_loss += (prob_0 * n_bp)
+
+return uniformity_loss
+
